@@ -17,6 +17,9 @@
 
 import "SDL3" as SDL3
 use SDL3.(Event, Renderer, WindowFlag, Scancode, Font, Flip)
+// 直接走 FFI 拿 SDL_SetTextureScaleMode：模块的 loadImageTexture 固定把贴图设成 LINEAR，
+// 像素画必须改回 NEAREST（SDL3.dll 模块内部已经加载过，这里 ff.load 会复用同一个句柄）
+import ffi
 import dirs
 import "Music" as audio
 use audio.(Sound, Sfx)
@@ -2752,6 +2755,28 @@ func handleEvent(Event e): bool {
 
 // ==================== 主函数 ====================
 
+// 把贴图缩放模式改回 NEAREST（像素画专用）
+clib sdl3raw {
+    bool SDL_SetTextureScaleMode(Ptr[u8] texture, i32 scaleMode)
+}
+
+sdl3raw _rawSdl = null
+
+func rawSdl(): sdl3raw {
+    if _rawSdl == null {
+        string ext = if _os() == "windows" then ".dll" else ".so"
+        _rawSdl = ffi.load("SDL3" + ext)
+    }
+    return _rawSdl
+}
+
+func texNearest(Ptr[u8] tex) {
+    if tex == null { return }
+    sdl3raw lib = rawSdl()
+    if lib == null { return }
+    lib.SDL_SetTextureScaleMode(tex, 0)      // 0 = SDL_SCALEMODE_NEAREST
+}
+
 func loadTextures(Ptr[u8] ren) {
     string base = dirs.res_dir()
     T_BG = SDL3.loadImageTexture(ren, base + "/image/level_1.png")
@@ -2759,6 +2784,14 @@ func loadTextures(Ptr[u8] ren) {
     T_ENEMY = SDL3.loadImageTexture(ren, base + "/image/smb_enemies_sheet.png")
     T_ITEM = SDL3.loadImageTexture(ren, base + "/image/item_objects.png")
     T_TILE = SDL3.loadImageTexture(ren, base + "/image/tile_set.png")
+    // ★ 像素画必须用 NEAREST 缩放：SDL3 模块的 loadImageTexture 默认设成 LINEAR，
+    //   精灵图四周那些"A=0 但带颜色"的像素会被双线性插值掺进来，
+    //   放大 2.5 倍后就是一圈白/脏边的"描边"（马里奥看着有白边就是这个原因）
+    texNearest(T_BG)
+    texNearest(T_MARIO)
+    texNearest(T_ENEMY)
+    texNearest(T_ITEM)
+    texNearest(T_TILE)
     if T_BG == null { print("[警告] level_1.png 加载失败") }
     if T_MARIO == null { print("[警告] mario_bros.png 加载失败") }
     if T_ENEMY == null { print("[警告] smb_enemies_sheet.png 加载失败") }
