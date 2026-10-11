@@ -604,6 +604,8 @@ func updateGame(Game g) {
 
 // ==================== 主函数 ====================
 main() {
+    // 无控制台：GUI 程序双击不弹黑框 ✓；编译器检测到这句 ⇒ -p 打包时自动用**无控制台版 VM** ✓
+    _console(false)
     var win = SDL3.createWindow({
         title: "扫雷 — 选择难度",
         w: _int(MENU_W),

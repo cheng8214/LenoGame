@@ -766,6 +766,8 @@ func handleEvent(Game g, Event e): bool {
 // ==================== 主函数 ====================
 
 main() {
+    // 无控制台：GUI 程序双击不弹黑框 ✓；编译器检测到这句 ⇒ -p 打包时自动用**无控制台版 VM** ✓
+    _console(false)
     var win = SDL3.createWindow({
         title: "俄罗斯方块",
         w: _int(WIN_W),

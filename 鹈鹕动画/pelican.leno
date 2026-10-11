@@ -1251,6 +1251,8 @@ func on_event(Pelican p, Event e): bool {
 // ==================== main ====================
 
 main() {
+    // 无控制台：GUI 程序双击不弹黑框 ✓；编译器检测到这句 ⇒ -p 打包时自动用**无控制台版 VM** ✓
+    _console(false)
     var win = SDL3.createWindow({title: "鹈鹕动画 Pelican — LenoSDL3", w: WIN_W, h: WIN_H})
     if not win.ok { print("创建窗口失败"); return }
     win.setResizable(false)

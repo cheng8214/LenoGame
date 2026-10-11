@@ -1,0 +1,15 @@
+# resource.toml — 打包资源配置（独立于 leno.toml，没有 leno.toml 也能用 ✓）
+#
+# [pack] 控制 -p 打包：
+#   onefile   = true  → 单文件模式：库与资源内嵌进 exe，首次运行解包到**用户缓存目录**
+#                       （按资源内容哈希分子目录；不会污染 exe 所在目录/桌面 ✓）
+#                       （不加此项时也可用命令行 --onefile 临时开启）
+#   resources = 通配模式数组（相对本文件所在目录，声明什么就嵌什么）：
+#                 段内 * = 任意长、? = 单字符；单独一段写两个星号 = 跨任意层目录
+#
+# 本游戏（五子棋）**不读任何外部资源** ✓：棋盘与棋子全部由 Canvas 程序化绘制，
+#   音效暂未加入 ⇒ 只声明 onefile（这样 `leno.exe -p 五子棋/gomoku.leno` 出来就是单文件 ✓）。
+#   ⚠ 将来若加了图片/音效目录（如 images/ music/），在这里补一行 resources 即可 ✓
+
+[pack]
+onefile = true
