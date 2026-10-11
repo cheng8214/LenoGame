@@ -1,6 +1,6 @@
 # LenoGame —— 用 Leno 语言写的游戏合集
 
-七个用 [LenoLang](https://gitee.com/cheng8214/LenoLang) 写的 GUI 游戏 / 动画，全部基于
+八个用 [LenoLang](https://gitee.com/cheng8214/LenoLang) 写的 GUI 游戏 / 动画，全部基于
 `LenoSDL3` 框架（窗口、控件、Canvas 自绘）。
 
 | 目录 | 入口文件 |
@@ -11,6 +11,7 @@
 | `扫雷/` | `minesweeper.leno` |
 | `植物大战僵尸/` | `pvz.leno`（另有地图 / 动画编辑器 `anim_editor.leno`） |
 | `飞机大战/` | `plane_war.leno` |
+| `超级玛丽/` | `super_mario.leno`（`sm_types.leno` 为数据结构） |
 | `鹈鹕动画/` | `pelican.leno` |
 
 ## 怎么跑

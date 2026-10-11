@@ -1,0 +1,4 @@
+# 资源清单（打包 -p 单文件时用）
+[pack]
+onefile   = true
+resources = ["image/**", "sound/**"]

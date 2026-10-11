@@ -1,0 +1,120 @@
+// sm_types.leno — 超级玛丽数据结构（struct 定义集中处）
+//
+// 用法（与 塔防/td_types.leno 同款拆分方式）：
+//   import "sm_types.leno" as types
+//   use types.(Mario, Box, Brick, CoinBox, Enemy, Powerup, Coin, Piece, ScorePop, Checkpoint, Keys, Game)
+//
+// 注意：这里只放 struct；常量、关卡数据、逻辑、渲染都在 super_mario.leno 里。
+
+import "SDL3" as SDL3
+use SDL3.Font
+import "Music" as audio
+use audio.(Sound, Sfx)
+
+export struct Mario {
+    float x = 110, y = 498, w = 30, h = 40
+    float x_vel = 0, y_vel = 0
+    float max_x_vel = 6, max_y_vel = 11, x_accel = 0.15, gravity = 1.01, jump_vel = -10
+    int state = 1, frame_index = 0
+    bool facing_right = true, allow_jump = true, dead = false, invincible = false
+    bool big = false, fire = false, allow_fireball = true, in_transition = false
+    bool hurt_invincible = false, in_castle = false, crouching = false, losing_invincibility = false
+    float walking_timer = 0, inv_timer = 0, inv_start = 0, fire_timer = 0
+    float death_timer = 0, transition_timer = 0, last_fireball = 0
+    float hurt_timer = 0, hurt_timer2 = 0, flag_timer = 0, flag_right = 0
+    int inv_index = 0, frame_tint = 0        // frame_tint: 0 普通 1 绿 2 红 3 黑
+}
+
+export struct Box { float x = 0, y = 0, w = 0, h = 0 }
+
+export struct Brick {
+    float x = 0, y = 0, w = 43, h = 43
+    float rest_y = 0, y_vel = 0, gravity = 1.2
+    int state = 0, contents = 0, coin_total = 0, frame_index = 0
+    bool visible = true, powerup_in_box = true
+}
+
+export struct CoinBox {
+    float x = 0, y = 0, w = 43, h = 43
+    float rest_y = 0, y_vel = 0, gravity = 1.2
+    int state = 0, contents = 0, frame_index = 0
+    float anim_timer = 0
+    bool first_half = true
+}
+
+export struct Enemy {
+    float x = 0, y = 0, w = 40, h = 40
+    float x_vel = -2, y_vel = 0, gravity = 1.5, home_y = 538
+    int kind = 0, state = 0, frame_index = 0, direction = 0     // direction: 0 左 1 右
+    float anim_timer = 0, death_timer = 0
+    int group = 0
+    bool active = false
+    bool released = false     // 是否已被检查点"放出"过（未放出的要留在表里等触发）
+    bool in_shell = false
+}
+
+export struct Powerup {
+    float x = 0, y = 0, w = 40, h = 40
+    float x_vel = 0, y_vel = 0, gravity = 1, max_y_vel = 8, box_height = 0
+    int kind = 0, state = 0, frame_index = 0, direction = 1
+    float anim_timer = 0
+    bool active = false
+}
+
+export struct Coin {
+    float x = 0, y = 0, w = 20, h = 35
+    float y_vel = -15, gravity = 1, initial_height = 0
+    int frame_index = 0
+    float anim_timer = 0
+    bool active = false
+}
+
+export struct Piece {
+    float x = 0, y = 0, w = 20, h = 20
+    float x_vel = 0, y_vel = 0, gravity = 0.8
+    bool flip = false, active = false
+}
+
+export struct ScorePop {
+    float x = 0, y = 0, vy = -3, timer = 0
+    string text = ""
+    bool active = false, isflag = false
+    int value = 0
+}
+
+export struct Checkpoint {
+    float x = 0, y = 0, w = 10, h = 600
+    int kind = 0        // 0 敌人组 1 旗杆 2 城堡 3 秘密蘑菇
+    int group = 0
+    bool done = false
+}
+
+export struct Keys { bool left = false, right = false, jump = false, action = false, down = false }
+
+export struct Game {
+    int state = 0, level_state = 0
+    float viewport_x = 0, level_w = 9087
+    int score = 0, coins = 0, lives = 3, time = 400
+    float time_timer = 0, frame = 0
+    float camera_start_x = 0
+    Mario mario
+    Array[Box] solids = []
+    Array[Brick] bricks = []
+    Array[CoinBox] coinboxes = []
+    Array[Enemy] enemies = []
+    Array[Enemy] shells = []
+    Array[Enemy] dying = []
+    Array[Powerup] powerups = []
+    Array[Coin] coins_arr = []
+    Array[Piece] pieces = []
+    Array[ScorePop] pops = []
+    Array[Checkpoint] cps = []
+    // 旗杆
+    float flag_x = 8505, flag_y = 100, flag_state = 0
+    float castle_flag_y = 0, castle_flag_on = false
+    float death_wait = 0, clear_timer = 0
+    float flag_score_timer = 0
+    Keys K
+    Font font
+    bool audioOk = false
+}
