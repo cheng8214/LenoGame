@@ -93,6 +93,7 @@ export struct Keys { bool left = false, right = false, jump = false, action = fa
 
 export struct Game {
     int state = 0, level_state = 0
+    int level = 1                 // 当前关卡（1-1 ~ 1-MAX_LEVEL）
     float viewport_x = 0, level_w = 9087
     int score = 0, coins = 0, lives = 3, time = 400
     float time_timer = 0, frame = 0
@@ -114,7 +115,9 @@ export struct Game {
     float castle_flag_y = 0, castle_flag_on = false
     float death_wait = 0, clear_timer = 0
     float flag_score_timer = 0
+    float banner_timer = 0        // 关卡开场横幅剩余毫秒
     Keys K
     Font font
+    Font fontSmall                // 界面/HUD 小字号（用参考实现的 Fixedsys500c.ttf）
     bool audioOk = false
 }
