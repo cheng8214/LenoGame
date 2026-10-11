@@ -868,6 +868,7 @@ func marioFrames(Mario m): Array[int] {
     }
     if m.crouching and m.big {
         g_frame_idx = 7
+        if m.fire { return M_FIRE }      // 火焰马里奥的蹲下帧在 M_FIRE[7]
         return M_BIG
     }
     if m.invincible { return tintFrames(m) }
@@ -947,6 +948,16 @@ func getOutOfCrouch(Mario m) {
     }
 }
 
+// 蹲下姿态：对应参考实现的 check_if_crouching()——帧 7 是 16x22 ⇒ 碰撞框 40x55，
+// 且**脚底不动**（left/bottom 保持），所以精灵贴地、不会浮空。
+func crouchPose(Mario m) {
+    if not m.big { return }
+    float bottom = m.y + m.h
+    m.w = 40.0
+    m.h = 55.0
+    m.y = bottom - m.h
+}
+
 func marioStanding(Mario m) {
     checkAllowJump(m)
     checkAllowFireball(m)
@@ -998,6 +1009,17 @@ func marioWalking(Mario m) {
         m.state = ST_JUMP
         if m.x_vel > 4.5 or m.x_vel < -4.5 { m.y_vel = FAST_JUMP_VEL } else { m.y_vel = JUMP_VEL }
         m.allow_jump = false
+    }
+    // ★ 走动中按 ↓ 也进蹲下：原版是"滑铲"（保持惯性减速停住），这里同样按"无方向"处理，
+    //   这样 ↓ 在走/站两种状态下都有反应（参考实现只在 standing() 里设 crouching，手感偏迟钝）
+    if K.down {
+        m.crouching = true
+        if m.facing_right {
+            if m.x_vel > 0.0 { m.x_vel = m.x_vel - m.x_accel } else { m.x_vel = 0.0; m.state = ST_STAND }
+        } else {
+            if m.x_vel < 0.0 { m.x_vel = m.x_vel + m.x_accel } else { m.x_vel = 0.0; m.state = ST_STAND }
+        }
+        return
     }
     if K.left {
         getOutOfCrouch(m)
@@ -1184,6 +1206,8 @@ func startDeathJump(Mario m) {
 
 // 无敌 / 受伤闪烁 / 蹲下（mario.py check_for_special_state）
 func checkSpecialState(Mario m) {
+    // 蹲下：每帧把碰撞框收到 40x55（脚底不动）——只有大马里奥会变矮
+    if m.crouching and m.big { crouchPose(m) }
     if m.invincible {
         float d = NOW - m.inv_start
         if d < 10000.0 {
