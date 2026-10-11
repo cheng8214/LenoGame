@@ -781,7 +781,10 @@ func newMario(float x): Mario {
     Mario m = new Mario()
     m.x = x
     m.y = GROUND_HEIGHT - 40.0
-    m.w = 30.0
+    // ★ 碰撞框宽度取"该姿态最宽的精灵帧"：小马里奥的走动帧是 16px×2.5 = 40，
+    //   若框只有 30（= 站定帧 12px 宽），精灵就会从框的右边挂出去 10px
+    //   ⇒ 顶到水管/砖块时人物"陷"进方块里（参考实现 rect=image.get_rect() 也有这毛病）
+    m.w = 40.0
     m.h = 40.0
     m.state = ST_WALK
     m.frame_index = 0
@@ -937,7 +940,7 @@ func animationSpeed(Mario m): float {
 // 让碰撞框对齐到当前姿态（Python: get_out_of_crouch / adjust_rect / become_*）
 func setPose(Mario m, bool big) {
     float bottom = m.y + m.h
-    if big { m.w = 40.0; m.h = 80.0 } else { m.w = 30.0; m.h = 40.0 }
+    if big { m.w = 40.0; m.h = 80.0 } else { m.w = 40.0; m.h = 40.0 }
     m.y = bottom - m.h
 }
 
@@ -2586,7 +2589,18 @@ func renderMario(Renderer r) {
     int idx = g_frame_idx
     float alpha = marioAlpha(m)
     if m.hurt_invincible and alpha == 0.0 { return }
-    drawFrame(r, T_MARIO, a, idx, m.x - G.viewport_x, m.y, SIZE_MULT, not m.facing_right, false)
+    // ★ 精灵在碰撞框内"水平居中 + 脚底对齐框底"：
+    //   走动帧 40 宽 = 框宽（严丝合缝）；站定帧只有 30 宽 ⇒ 左右各留 5px。
+    //   这样"身体"永远贴在框内，不会再出现"顶到水管/砖块却看着陷进去"的错位。
+    if a.len() < 4 { return }
+    int nn = a.len() / 4
+    int fi = idx
+    if fi < 0 { fi = 0 }
+    if fi >= nn { fi = fi - (fi / nn) * nn }
+    float fw = _float(a[fi * 4 + 2]) * SIZE_MULT
+    float fh = _float(a[fi * 4 + 3]) * SIZE_MULT
+    drawFrame(r, T_MARIO, a, idx, m.x - G.viewport_x + (m.w - fw) * 0.5, m.y + (m.h - fh),
+              SIZE_MULT, not m.facing_right, false)
 }
 
 func renderHud(Renderer r) {
