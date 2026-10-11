@@ -1,0 +1,10 @@
+# Leno 构建产物（编译时会自动生成，不入库）
+.lenocache/
+*.lenomc
+*.lenosymc
+*.lenb
+*.deps
+
+# 打包产物（-p / --onefile）
+dist/
+*.exe
