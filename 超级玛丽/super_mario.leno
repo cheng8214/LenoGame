@@ -16,8 +16,6 @@
 // 操作：← → 移动   A / 空格 / ↑ 跳跃   S / Shift 加速跑（火球键）   ↓ 蹲下   回车 开始   ESC 退出
 
 import "SDL3" as SDL3
-import "sdl_core" as core
-use core.sdl3
 use SDL3.(Event, Renderer, WindowFlag, Scancode, Font, Flip)
 import dirs
 import "Music" as audio
@@ -2343,7 +2341,7 @@ func renderGame(Renderer r) {
                 r.drawTextCentered(G.font, "按 回车 开始", 0.0, _float(SW), 420.0, #FFD700FF)
             }
         }
-        core.requestRedraw()
+        SDL3.requestRedraw()
         return
     }
 
@@ -2383,7 +2381,7 @@ func renderGame(Renderer r) {
             }
         }
     }
-    core.requestRedraw()
+    SDL3.requestRedraw()
 }
 
 // ==================== 输入 ====================
@@ -2513,7 +2511,7 @@ main() {
                 g_ren = r.handle
                 loadTextures(g_ren)
             }
-            NOW = core.getTicks()
+            NOW = SDL3.getTicks()
             if G.state == GS_PLAY {
                 updateLevel()
                 G.frame = G.frame + 1.0

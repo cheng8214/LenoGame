@@ -16,7 +16,6 @@
 //       每消 10 行升 1 级，下落越来越快。
 
 import "SDL3" as SDL3
-import "sdl_core" as core
 use SDL3.(Event, Renderer, WindowFlag, Scancode, Font)
 import rands
 import "Music" as audio
@@ -689,7 +688,7 @@ func renderGame(Game g, Renderer r) {
         default { }
     }
 
-    core.requestRedraw()
+    SDL3.requestRedraw()
 }
 
 // ==================== 事件处理 ====================

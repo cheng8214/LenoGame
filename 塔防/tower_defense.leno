@@ -23,7 +23,6 @@
 // 素材生成：在本目录执行  leno.exe gen_assets.leno
 
 import "SDL3" as SDL3
-import "sdl_core" as core
 use SDL3.(Event, Renderer, WindowFlag, Scancode, Font, Flip)
 import maths
 import rands
@@ -476,7 +475,7 @@ func loadResources(Game g, Renderer r) {
     g.texBoom4 = assets.loadSheet(r, base + "/image/人物4爆炸.png", 4)
 
     // 静态地图预渲染到一张纹理，之后每帧只需一次贴图
-    g.mapTex = r.createTexture(core.PIXELFORMAT_RGBA8888, 2, _int(MAP_W), _int(MAP_H))
+    g.mapTex = r.createTexture(SDL3.PIXELFORMAT_RGBA8888, 2, _int(MAP_W), _int(MAP_H))
     if g.mapTex != null {
         r.setRenderTarget(g.mapTex)
         r.clearColor(#00000000)
@@ -2553,7 +2552,7 @@ main() {
         },
         func(Renderer r) {
             // 框架默认是「事件驱动重绘」，游戏需要连续动画 → 每帧请求下一帧重绘
-            core.markFrameRedraw()
+            SDL3.markFrameRedraw()
             if not g.loaded { loadResources(g, r) }
 
             if g.state == ST_PLAY {

@@ -13,7 +13,6 @@
 //   anim/ 由 gen_anim.ps1 从官方 reanim 骨骼动画导出（本目录执行该脚本可重新生成）
 
 import "SDL3" as SDL3
-import "sdl_core" as core
 import "Music" as audio
 use SDL3.(Event, Renderer, WindowFlag, Scancode, Font, Flip)
 use audio.(Sound, Sfx)
@@ -1522,7 +1521,7 @@ main() {
             return handleEvent(g, ev)
         },
         func(Renderer r) {
-            core.markFrameRedraw()
+            SDL3.markFrameRedraw()
             if not g.loaded { loadResources(g, r) }
             if g.state == ST_PLAY { updateGame(g) }
             else { g.frameCount = g.frameCount + 1 }

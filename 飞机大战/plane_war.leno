@@ -18,7 +18,6 @@
 //   bkmusic/ — 音频文件（bk.mp3 背景, boss.mp3 BOSS, zq.wav 射击, chi.wav 击中, db.wav 爆炸, si.wav 死亡）
 
 import "SDL3" as SDL3
-import "sdl_core" as core
 use SDL3.(Event, Renderer, WindowFlag, Scancode, Font, Flip)
 import maths
 import rands
@@ -975,7 +974,7 @@ func renderGame(Game g, Renderer r) {
         default { }
     }
 
-    core.requestRedraw()
+    SDL3.requestRedraw()
 }
 
 func renderMenu(Game g, Renderer r) {

@@ -13,7 +13,6 @@
 //   翻开所有非雷格子即获胜；踩到雷则失败，揭示全部地雷
 
 import "SDL3" as SDL3
-import "sdl_core" as core
 use SDL3.(Event, Renderer, WindowFlag, Scancode, Font, Window)
 import rands
 import "Music" as audio
@@ -453,7 +452,7 @@ func drawMenu(Game g, Renderer r) {
     }
     r.drawTextCentered(g.font, "左键 翻开    右键 插旗", 0.0, MENU_W, MENU_H - 70.0, COL_SUB)
     r.drawTextCentered(g.font, "数字键 切换难度    R 重开    ESC 退出", 0.0, MENU_W, MENU_H - 44.0, COL_SUB)
-    core.requestRedraw()
+    SDL3.requestRedraw()
 }
 
 // 游戏结束弹窗：半透明遮罩 + 面板 + 两个按钮（重新开始 / 回到主界面）
@@ -500,7 +499,7 @@ func renderGame(Game g, Renderer r) {
         }
     }
     if g.over { drawOverPanel(g, r) }
-    core.requestRedraw()
+    SDL3.requestRedraw()
 }
 
 // ==================== 事件 ====================

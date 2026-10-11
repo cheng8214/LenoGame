@@ -2,7 +2,6 @@
 // 用法：import "assets.leno" as assets
 //       g.texX = assets.loadSheet(r, "image/xxx.png", 6)
 import "SDL3" as SDL3
-import "sdl_core" as core
 import maths
 use SDL3.Renderer
 use SDL3.Flip
@@ -52,7 +51,7 @@ export func loadSheet(Renderer r, string path, int n): Array[Ptr[u8]] {
     var sheet = SDL3.loadImageTexture(r.handle, path)
     if sheet != null {
         for 0 : n - 1 to fi {
-            var ft = r.createTexture(core.PIXELFORMAT_RGBA8888, 2, 48, 48)
+            var ft = r.createTexture(SDL3.PIXELFORMAT_RGBA8888, 2, 48, 48)
             if ft != null {
                 r.setRenderTarget(ft)
                 r.clearColor(#00000000)
@@ -69,7 +68,7 @@ export func loadSheet(Renderer r, string path, int n): Array[Ptr[u8]] {
 // 创建 1x1 透明占位纹理（用于无素材槽位占位，避免下标空洞）
 // 创建失败返回 null（与调用方原逻辑一致：允许 add(null)）
 export func blankTexture(Renderer r): Ptr[u8] {
-    var t = r.createTexture(core.PIXELFORMAT_RGBA8888, 2, 1, 1)
+    var t = r.createTexture(SDL3.PIXELFORMAT_RGBA8888, 2, 1, 1)
     if t != null {
         r.setRenderTarget(t)
         r.clearColor(#00000000)

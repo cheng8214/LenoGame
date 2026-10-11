@@ -17,7 +17,6 @@
 //           在 AI 对 AI 模式下会持续累计战绩，直接看出哪方 AI 更厉害。
 
 import "SDL3" as SDL3
-import "sdl_core" as core
 use SDL3.(Event, Renderer, WindowFlag, Scancode, Font)
 import rands
 
@@ -878,7 +877,7 @@ func drawMenu(Game g, Renderer r) {
 func renderGame(Game g, Renderer r) {
     if g.state == "menu" {
         drawMenu(g, r)
-        core.requestRedraw()
+        SDL3.requestRedraw()
         return
     }
     r.setColor(COL_BG)
@@ -894,7 +893,7 @@ func renderGame(Game g, Renderer r) {
         r.fillRect(bx, 14.0, mw + 20.0, 28.0)
         r.drawTextCentered(g.font, g.msg, 0.0, 600.0, 20.0, COL_GOLD)
     }
-    core.requestRedraw()
+    SDL3.requestRedraw()
 }
 
 // ==================== 事件 ====================
