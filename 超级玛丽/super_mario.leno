@@ -16,10 +16,7 @@
 // 操作：← → 移动   A / 空格 / ↑ 跳跃   S / Shift 加速跑（火球键）   ↓ 蹲下   回车 开始   ESC 退出
 
 import "SDL3" as SDL3
-use SDL3.(Event, Renderer, WindowFlag, Scancode, Font, Flip)
-// 直接走 FFI 拿 SDL_SetTextureScaleMode：模块的 loadImageTexture 固定把贴图设成 LINEAR，
-// 像素画必须改回 NEAREST（SDL3.dll 模块内部已经加载过，这里 ff.load 会复用同一个句柄）
-import ffi
+use SDL3.(Event, Renderer, WindowFlag, Scancode, Font, Flip, ScaleMode)
 import dirs
 import "Music" as audio
 use audio.(Sound, Sfx)
@@ -116,6 +113,21 @@ var GS_OVER = 2
 var GS_CLEAR = 3
 
 var MAX_LEVEL = 4             // 共 1-1 ~ 1-4 关
+
+// 地下金币房（1-1 高水管 ↓ 进入）
+var ROOM_W = 900.0                  // 房间宽度（地面铺满，相机夹紧也用它）
+var ROOM_FLOOR_Y = 538.0            // 房间地面高度：与主关卡一致 ⇒ 物理完全不用改
+var ROOM_PIPE_W = 83.0
+var ROOM_PIPE_H = 86.0              // 房间里两根水管只有 86 高 ⇒ 一跳就能站上去（172 高是跳不上去的）
+var ROOM_PIPE_TOP = 452.0           // 房间水管顶（452 = 538 - 86）
+var LEVEL1_PIPE_TOP = 366.0         // 1-1 里那根高水管的顶（进入点 / 出来点都在这）
+var ROOM_ENTRY_X = 40.0             // 房间里的入口水管
+var ROOM_EXIT_X = 620.0             // 房间里的出口水管
+var ROOM_WALL_X = 745.0             // 右端砖墙（挡住马里奥，别掉出房间）
+var LEVEL1_ENTRY_PIPE = 1973.0      // 1-1 里唯一能钻的那根高水管
+var LEVEL1_RETURN_PIPE = 2445.0     // 出来时站到 1-1 的下一根水管顶上
+var LEVEL_WIDTH = 9087.0            // 关卡总长（相机夹紧用；进金币房时会临时改成房间宽）
+var WARP_SINK_FRAMES = 30.0         // 钻管子下沉动画帧数
 
 // ==================== 精灵帧表（每帧 4 个 int：sx sy sw sh） ====================
 
@@ -430,6 +442,16 @@ func clearLevelData() {
 // ⚠ 地面与坑沿用背景图 level_1.png 里画好的两处坑（2953-3048、6554-6647），
 //   所以四关共用同一份地面几何；关卡差异体现在水管/台阶/砖块/金币箱/敌人/检查点上。
 func setupLevel(int lv) {
+    // 重开关卡 / 复活 / 切关时把金币房状态一并清掉
+    // （进房间走的是 buildCoinRoom，不经过 setupLevel，所以不会被误清）
+    G.in_room = false
+    G.warp_kind = 0
+    G.warp_t = 0.0
+    G.room_coins = []
+    // ★ 必须把关卡总长还回来：金币房把它改成了 900，不还原的话相机
+    //   clamp 到 level_w - SW = 100 ⇒ 一出房间往右走画面就跳回关卡开头，
+    //   马里奥直接跑出屏幕外 ✗（"出来后显示不正常"就是这个）
+    G.level_w = LEVEL_WIDTH
     clearLevelData()
     if lv == 1 {
         buildSolids()
@@ -774,7 +796,7 @@ func newGame(): Game {
     g.score = 0
     g.coins = 0
     g.time = 400
-    g.level_w = 9087.0
+    g.level_w = LEVEL_WIDTH
     g.viewport_x = 0.0
     g.mario = newMario(110.0)
     return g
@@ -800,6 +822,149 @@ func newMario(float x): Mario {
     m.jump_vel = JUMP_VEL
     m.gravity = GRAVITY
     return m
+}
+
+// ==================== 地下金币房（1-1 高水管 ↓ 进入）====================
+// 参考实现（justinarmstrong 那版）没有这个机制，这里是照 NES 原版补的：
+// 站在 1-1 那根高水管顶上按 ↓ → 钻进管子 → 地下金币房（黑底 + 一排金币）→
+// 从房间右侧水管再按 ↓ → 出来时站在 1-1 后面那根水管顶上，大/火状态保留。
+// （相关常量放在文件顶部"常量"区，便于 setupLevel 引用）
+
+func buildCoinRoom() {
+    addSolid(0.0, ROOM_FLOOR_Y, ROOM_W, 60.0)
+    addSolid(ROOM_ENTRY_X, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
+    addSolid(ROOM_EXIT_X, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
+    addSolid(ROOM_WALL_X, 98.0, ROOM_W - ROOM_WALL_X, ROOM_FLOOR_Y - 98.0)
+    G.room_coins = []
+    for 0:7 to i {
+        addRoomCoin(150.0 + _float(i) * 55.0, 460.0)
+    }
+}
+
+func addRoomCoin(float x, float y) {
+    Coin c = new Coin()
+    c.x = x
+    c.y = y
+    c.w = 20.0
+    c.h = 35.0
+    c.y_vel = 0.0
+    c.gravity = 0.0
+    c.active = true
+    c.frame_index = 0
+    c.anim_timer = NOW
+    G.room_coins.add(c)
+}
+
+func roomCoinsUpdate() {
+    Mario m = G.mario
+    for 0:G.room_coins.len() - 1 to i {
+        Coin c = G.room_coins[i]
+        if not c.active { continue }
+        if (NOW - c.anim_timer) > 130.0 {
+            if c.frame_index < 3 { c.frame_index = c.frame_index + 1 } else { c.frame_index = 0 }
+            c.anim_timer = NOW
+        }
+        if ovl(m.x, m.y, m.w, m.h, c.x, c.y, c.w, c.h) {
+            c.active = false
+            G.coins = G.coins + 1
+            addScore(200, c.x - G.viewport_x, c.y - 20.0)
+            if g_audio { sfxCoin.play() }
+        }
+    }
+}
+
+// 站在水管"正上方"并且按 ↓（脚底要压在水管顶上，且人在管子横向范围内）
+func onPipeTop(float pipe_x, float pipe_top, Mario m): bool {
+    if not K.down { return false }
+    float foot = m.y + m.h
+    if foot < pipe_top - 4.0 or foot > pipe_top + 6.0 { return false }
+    if m.x + m.w <= pipe_x + 6.0 or m.x >= pipe_x + ROOM_PIPE_W - 6.0 { return false }
+    return true
+}
+
+func checkPipeEntry() {
+    if G.warp_kind != 0 or G.mario.dead { return }
+    Mario m = G.mario
+    if m.state != ST_STAND { return }
+    if G.in_room {
+        if onPipeTop(ROOM_EXIT_X, ROOM_PIPE_TOP, m) { startPipeWarp(2) }
+    } else {
+        if G.level != 1 { return }
+        if onPipeTop(LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, m) {
+            G.saved_big = m.big
+            G.saved_fire = m.fire
+            startPipeWarp(1)
+        }
+    }
+}
+
+// 传送：借"马里奥过渡态"把关卡冻结（走 updateDuringTransition），动画自己做
+func startPipeWarp(int kind) {
+    G.warp_kind = kind
+    G.warp_t = 56.0
+    Mario m = G.mario
+    m.in_transition = true
+    m.crouching = false
+    m.w = 40.0
+    if m.big { m.h = 80.0 } else { m.h = 40.0 }
+    m.x_vel = 0.0
+    m.y_vel = 0.0
+    m.state = ST_STAND
+    G.level_state = LS_FROZEN
+    if g_audio { sfxPipe.play() }
+}
+
+func warpsUpdate() {
+    if G.warp_kind == 0 { return }
+    Mario m = G.mario
+    G.warp_t = G.warp_t - 1.0
+    // 下沉距离 = 身高 + 6（保证整个身子都进到管口以下，大马里奥也不会露头）
+    if G.warp_t > 26.0 { m.y = m.y + (m.h + 6.0) / WARP_SINK_FRAMES }
+    if G.warp_t <= 0.0 {
+        G.warp_t = 0.0
+        if G.warp_kind == 1 { enterCoinRoom() } else { exitCoinRoom() }
+        G.warp_kind = 0
+    }
+}
+
+func enterCoinRoom() {
+    clearLevelData()
+    buildCoinRoom()
+    G.in_room = true
+    G.level_w = ROOM_W
+    G.viewport_x = 0.0
+    G.banner_timer = 0.0
+    Mario m = G.mario
+    m.x = ROOM_ENTRY_X + (ROOM_PIPE_W - m.w) * 0.5
+    m.y = ROOM_PIPE_TOP - m.h
+    m.x_vel = 0.0
+    m.y_vel = 0.0
+    m.state = ST_STAND
+    m.in_transition = false
+    G.level_state = LS_NOTFROZEN
+}
+
+func exitCoinRoom() {
+    bool wasBig = G.saved_big
+    bool wasFire = G.saved_fire
+    setupLevel(G.level)                 // 重建 1-1（内部会把房间状态清干净）
+    G.in_room = false
+    G.banner_timer = 0.0                // 别又弹一次 "1-1" 横幅
+    Mario m = G.mario
+    m.big = wasBig
+    m.fire = wasFire
+    m.w = 40.0
+    if wasBig { m.h = 80.0 } else { m.h = 40.0 }
+    m.x = LEVEL1_RETURN_PIPE + (ROOM_PIPE_W - m.w) * 0.5
+    m.y = LEVEL1_PIPE_TOP - m.h
+    m.x_vel = 0.0
+    m.y_vel = 0.0
+    m.state = ST_STAND
+    m.crouching = false
+    m.in_transition = false
+    G.viewport_x = LEVEL1_RETURN_PIPE - 300.0
+    if G.viewport_x < 0.0 { G.viewport_x = 0.0 }
+    G.level_state = LS_NOTFROZEN
 }
 
 // ==================== 马里奥帧（mario.py） ====================
@@ -1269,6 +1434,7 @@ func marioHandleState(Mario m) {
 }
 
 func marioUpdate() {
+    if G.warp_kind != 0 { return }          // 钻水管期间由 warpsUpdate 接管
     Mario m = G.mario
     marioHandleState(m)
     checkSpecialState(m)
@@ -1906,6 +2072,7 @@ func testIfMarioIsFalling() {
 }
 
 func adjustMarioPosition() {
+    if G.warp_kind != 0 { return }      // 钻管子期间不允许任何人推动马里奥（否则会被水管挤到旁边 ✗）
     Mario m = G.mario
     m.x = m.x + _float(_int(0.5 + m.x_vel))
     marioXCollide()
@@ -2395,6 +2562,8 @@ func updateDying() {
 
 func updateAllSprites() {
     marioUpdate()
+    checkPipeEntry()                 // ↓ 钻水管（1-1 那根高水管 / 金币房出口水管）
+    if G.in_room { roomCoinsUpdate() }
     flagUpdate()
     checkPoints()
     for 0:G.enemies.len() - 1 to i { enemyAnimation(G.enemies[i]) }
@@ -2461,6 +2630,7 @@ func updateFlagAndFireworks() {
 }
 
 func updateLevel() {
+    warpsUpdate()                    // 钻水管动画（冻结期间也要跑）
     if G.banner_timer > 0.0 { G.banner_timer = G.banner_timer - 16.0 }
     if G.level_state == LS_NOTFROZEN { updateAllSprites() }
     else if G.level_state == LS_FROZEN { updateDuringTransition() }
@@ -2469,6 +2639,40 @@ func updateLevel() {
 }
 
 // ==================== 渲染 ====================
+
+// 从关卡背景图里"切"一块画到屏幕上：金币房的地面/水管直接复用背景图里的画，
+// 风格与主关卡 100% 一致，也不用额外美术资源
+func drawBgPiece(Renderer r, float wx, float wy, float w, float h,
+                 float dx, float dy, float dw, float dh) {
+    r.drawTextureFromTo(T_BG, wx / BG_MULT, wy / BG_MULT, w / BG_MULT, h / BG_MULT, dx, dy, dw, dh)
+}
+
+func renderCoinRoom(Renderer r) {
+    float cx = G.viewport_x
+    // 地面：整条切背景图的地面（同尺寸 ⇒ 不缩放、不变形）
+    drawBgPiece(r, 0.0, ROOM_FLOOR_Y, ROOM_W, 60.0, 0.0 - cx, ROOM_FLOOR_Y, ROOM_W, 60.0)
+    // 两根水管：切 1-1 那根高水管的画（只取上面 86px = 管口 + 一段管身 ⇒ 接到地面正好）
+    drawBgPiece(r, LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H,
+                ROOM_ENTRY_X - cx, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
+    drawBgPiece(r, LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H,
+                ROOM_EXIT_X - cx, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
+    // 右端砖墙
+    float wy = 98.0
+    while wy < ROOM_FLOOR_Y - 2.0 {
+        float wx2 = ROOM_WALL_X
+        while wx2 < ROOM_W - 20.0 {
+            drawFrame(r, T_TILE, F_BRICK, 0, wx2 - cx, wy, BRICK_MULT, false, false)
+            wx2 = wx2 + 43.0
+        }
+        wy = wy + 43.0
+    }
+    // 房间金币
+    for 0:G.room_coins.len() - 1 to i {
+        Coin c = G.room_coins[i]
+        if not c.active { continue }
+        drawFrame(r, T_ITEM, F_COIN, c.frame_index, c.x - cx, c.y, SIZE_MULT, false, false)
+    }
+}
 
 func renderFlagpole(Renderer r) {
     float cx = G.viewport_x
@@ -2648,14 +2852,19 @@ func renderGame(Renderer r) {
         return
     }
 
-    // 背景（level_1.png 按 BG_MULT 放大后取视口）
-    r.drawTextureFromTo(T_BG, G.viewport_x / BG_MULT, 0.0, _float(SW) / BG_MULT, _float(SH) / BG_MULT,
-                        0.0, 0.0, _float(SW), _float(SH))
+    if G.in_room {
+        // 地下金币房：黑底 + 用背景图切片拼出的地面/水管/砖墙 + 房间金币
+        renderCoinRoom(r)
+    } else {
+        // 背景（level_1.png 按 BG_MULT 放大后取视口）
+        r.drawTextureFromTo(T_BG, G.viewport_x / BG_MULT, 0.0, _float(SW) / BG_MULT, _float(SH) / BG_MULT,
+                            0.0, 0.0, _float(SW), _float(SH))
 
-    // 1-4 是"城堡终章"：压一层暗色，做出城堡内部的感觉
-    if G.level == 4 {
-        r.setColorFloat(0.05, 0.03, 0.16, 0.55)
-        r.fillRect(0.0, 0.0, _float(SW), _float(SH))
+        // 1-4 是"城堡终章"：压一层暗色，做出城堡内部的感觉
+        if G.level == 4 {
+            r.setColorFloat(0.05, 0.03, 0.16, 0.55)
+            r.fillRect(0.0, 0.0, _float(SW), _float(SH))
+        }
     }
 
     renderPowerups(r)
@@ -2666,6 +2875,14 @@ func renderGame(Renderer r) {
     renderFlagpole(r)
     renderEnemies(r)
     renderMario(r)
+    // 钻水管：把管口的画再盖一次 → 马里奥看起来就是"钻进管子里"（否则会盯着他从管子前面滑下去 ✗）
+    if G.warp_kind == 1 and not G.in_room {
+        drawBgPiece(r, LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_FLOOR_Y - LEVEL1_PIPE_TOP,
+                    LEVEL1_ENTRY_PIPE - G.viewport_x, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_FLOOR_Y - LEVEL1_PIPE_TOP)
+    } else if G.warp_kind == 2 and G.in_room {
+        drawBgPiece(r, LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H,
+                    ROOM_EXIT_X - G.viewport_x, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
+    }
     renderHud(r)
     renderPops(r)
 
@@ -2755,26 +2972,10 @@ func handleEvent(Event e): bool {
 
 // ==================== 主函数 ====================
 
-// 把贴图缩放模式改回 NEAREST（像素画专用）
-clib sdl3raw {
-    bool SDL_SetTextureScaleMode(Ptr[u8] texture, i32 scaleMode)
-}
-
-sdl3raw _rawSdl = null
-
-func rawSdl(): sdl3raw {
-    if _rawSdl == null {
-        string ext = if _os() == "windows" then ".dll" else ".so"
-        _rawSdl = ffi.load("SDL3" + ext)
-    }
-    return _rawSdl
-}
-
+// 把贴图缩放模式改回 NEAREST（像素画专用）——走 SDL3 模块新导出的 setTextureScaleMode
 func texNearest(Ptr[u8] tex) {
     if tex == null { return }
-    sdl3raw lib = rawSdl()
-    if lib == null { return }
-    lib.SDL_SetTextureScaleMode(tex, 0)      // 0 = SDL_SCALEMODE_NEAREST
+    SDL3.setTextureScaleMode(tex, ScaleMode.NEAREST)
 }
 
 func loadTextures(Ptr[u8] ren) {
@@ -2849,6 +3050,7 @@ main() {
     if mShot != "" {
         win.setOverlay(func(Renderer r) {
             mFrames = mFrames + 1
+
             if mFrames >= mShotAt {
                 var wsz = win.getSize()
                 var s = r.readPixelsAt(0, 0, wsz.w, wsz.h)

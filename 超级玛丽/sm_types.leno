@@ -110,6 +110,13 @@ export struct Game {
     Array[Piece] pieces = []
     Array[ScorePop] pops = []
     Array[Checkpoint] cps = []
+    // 地下金币房（1-1 高水管 ↓ 进入）
+    bool in_room = false          // 是否在金币房里
+    int warp_kind = 0             // 0 无 / 1 钻进房间 / 2 回到关卡
+    float warp_t = 0              // 传送动画剩余帧
+    bool saved_big = false        // 回关卡时恢复大小 / 火焰状态
+    bool saved_fire = false
+    Array[Coin] room_coins = []   // 房间里的静态金币
     // 旗杆
     float flag_x = 8505, flag_y = 100, flag_state = 0
     float castle_flag_y = 0, castle_flag_on = false
