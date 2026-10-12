@@ -11,7 +11,7 @@ import "sm_util.leno" as u
 import "sm_items.leno" as it
 use it.(findSolid, findBrick, findCoinBox, findEnemy, findShell, findPowerup, addScore, addScoreOneUp, spawnPieces, checkEnemyOnBrick, brickStartBump, coinBoxStartBump)
 import "sm_audio.leno" as aud
-use aud.(setMusic, stopMusic, stopInvincibleMusic, playDeathJingle, playInvincibleMusic, playJump, playStomp, playKick, playCoin, playBump, playPowerup, playPipe, playFireball, playOneUp, playBrickSmash)
+use aud.(setMusic, stopMusic, stopInvincibleMusic, playDeathJingle, playInvincibleMusic, playJump, playStomp, playKick, playCoin, playBump, playPowerup, playPipe, playFireball, playOneUp, playBrickSmash, startStageClear)
 
 // ---- 常量别名（单一数据源在 sm_util.leno） ----
 const float WALK_ACCEL = u.WALK_ACCEL
@@ -470,6 +470,9 @@ export func marioBottomPole(Game g, Mario m) {
     if (g.now - m.flag_timer) < 210.0 { return }
     m.in_transition = false
     if m.y + m.h < 485.0 { m.state = ST_ENDFALL } else { m.state = ST_TOCASTLE }
+    // 离开旗杆 → 放 stage_clear 通关曲（参考实现是 FLAGPOLE → WALKING_TO_CASTLE 时切；
+    // 这里在"底部停留 210ms 结束"这个只走一次的时刻触发）
+    startStageClear()
 }
 
 export func setMarioBottomOfPole(Mario m) {

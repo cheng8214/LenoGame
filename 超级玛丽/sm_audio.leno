@@ -20,6 +20,7 @@ Sound musWorldClear
 Sound musOver
 Sound musInvincible
 Sound musFlag
+Sound musOutOfTime
 
 // ---- 音效（短音，构造时已做多实例轮转）----
 Sfx sfxSmallJump
@@ -34,6 +35,7 @@ Sfx sfxPipe
 Sfx sfxFireball
 Sfx sfxOneUp
 Sfx sfxBrickSmash
+Sound musCountDown          // 城堡倒计时滴答（当"并行音"用：与 BGM/jingle 同时在播）
 
 // 静音开关：音频设备不可用时置 false，之后所有操作直接跳过
 bool g_audio = false
@@ -48,6 +50,7 @@ export func loadAudio() {
     musOver = audio.createSound("sound/game_over.ogg")
     musInvincible = audio.createSound("sound/invincible.ogg")
     musFlag = audio.createSound("sound/flagpole.wav")
+    musOutOfTime = audio.createSound("sound/out_of_time.wav")
     if not bgm.ok {
         print("[提示] 音频未加载（静音运行）")
         g_audio = false
@@ -71,6 +74,7 @@ export func loadAudio() {
     sfxFireball = audio.createSfx("sound/fireball.ogg", 3, 0.5)
     sfxOneUp = audio.createSfx("sound/one_up.ogg", 2, 0.6)
     sfxBrickSmash = audio.createSfx("sound/brick_smash.ogg", 3, 0.55)
+    musCountDown = audio.createSound("sound/count_down.ogg")
     g_audio = true
 }
 
@@ -79,10 +83,15 @@ export func loadAudio() {
 export func stopMusic() {
     if not g_audio { return }
     bgm.stop(); bgmFast.stop(); musInvincible.stop()
+    musOutOfTime.stop(); musCountDown.stop()      // 时间警报 / 倒计时滴答也一并停
 }
 
 // 切关 / 复活时重置：让随后的 setMusic(1) 一定会重新起主题曲（不该被"模式没变"挡住）
-export func resetMusicMode() { g_music_mode = 0 }
+export func resetMusicMode() {
+    g_music_mode = 0
+    g_time_warning = false
+    if g_audio { musOutOfTime.stop() }
+}
 
 export func setMusic(int mode) {      // 1 普通主题 2 加速主题
     if not g_audio { return }
@@ -92,10 +101,13 @@ export func setMusic(int mode) {      // 1 普通主题 2 加速主题
     if mode == 1 { bgm.play() } else if mode == 2 { bgmFast.play() }
 }
 
-// 过关/死亡这类"过场音乐"：先停掉当前 BGM 再放（文件私有）
+// 过关/死亡这类"过场音乐"：先停掉当前 BGM 再放（文件私有）。
+// 时间警报/倒计时滴答也一并停 —— 过场音乐是"接管"语义，不允许和警报叠着播
 func playJingle(Sound s) {
     if not g_audio { return }
     stopMusic()
+    musOutOfTime.stop()
+    musCountDown.stop()
     s.play()
 }
 
@@ -104,6 +116,46 @@ export func playFlagJingle() { playJingle(musFlag) }
 export func playGameOverJingle() { playJingle(musOver) }
 export func playWorldClearJingle() { playJingle(musWorldClear) }
 export func playStageClearJingle() { playJingle(musClear) }
+
+// 走向城堡：停掉旗杆 jingle、放 stage_clear（参考实现 game_sound.py FLAGPOLE→STAGE_CLEAR，
+// 走城堡阶段和后面的倒计时滴答是并行音，互不打断）
+export func startStageClear() {
+    if not g_audio { return }
+    musFlag.stop()
+    musClear.play()
+}
+
+// ==================== 时间警报（time==100） ====================
+// 参考实现：time==100 先放 out_of_time.wav（TIME_WARNING），放完才切加速主题。
+// g_time_warning 标记"警报在放"，由每帧的 updateTimeWarning() 看着它放完再切。
+bool g_time_warning = false
+
+export func startTimeWarning() {
+    if not g_audio { return }
+    if g_time_warning or g_music_mode == 2 { return }     // 已在警报/已是加速主题
+    g_time_warning = true
+    stopMusic()
+    musOutOfTime.play()
+}
+
+// 每帧调用：警报放完 → 切加速主题
+export func updateTimeWarning() {
+    if not g_audio or not g_time_warning { return }
+    if musOutOfTime.isPlaying() { return }
+    g_time_warning = false
+    setMusic(2)
+}
+
+// ==================== 城堡倒计时滴答（count_down.ogg） ====================
+// 参考实现：进城堡扣剩余时间时放 count_down，扣完停（game_sound.py STAGE_CLEAR→FAST_COUNT_DOWN）。
+// 每帧调用：counting=true 保证在播（被谁停了会自动续上），false 停。
+export func updateCountDown(bool counting) {
+    if not g_audio { return }
+    if counting {
+    } else if musCountDown.isPlaying() {
+        musCountDown.stop()
+    }
+}
 
 // 无敌 BGM（循环，星道具期间一直放）
 export func playInvincibleMusic() { if g_audio { musInvincible.play() } }
@@ -136,9 +188,11 @@ export func uninitAudio() {
     if g_audio {
         bgm.uninit(); bgmFast.uninit(); musDeath.uninit(); musClear.uninit()
         musWorldClear.uninit(); musOver.uninit(); musInvincible.uninit(); musFlag.uninit()
+        musOutOfTime.uninit()
         sfxSmallJump.uninit(); sfxBigJump.uninit(); sfxStomp.uninit(); sfxKick.uninit()
         sfxCoin.uninit(); sfxBump.uninit(); sfxPowerup.uninit(); sfxPowerupApp.uninit()
         sfxPipe.uninit(); sfxFireball.uninit(); sfxOneUp.uninit(); sfxBrickSmash.uninit()
+        musCountDown.uninit()
         audio.uninit()
     }
 }

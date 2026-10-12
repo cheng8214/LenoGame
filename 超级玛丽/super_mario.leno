@@ -45,7 +45,7 @@ use it.(findSolid, findBrick, findCoinBox, findEnemy, findShell, findPowerup, ad
 import "sm_room.leno" as room
 use room.(checkPipeEntry, warpsUpdate, roomCoinsUpdate, buildCoinRoom)
 import "sm_audio.leno" as aud
-use aud.(loadAudio, uninitAudio, stopMusic, setMusic, resetMusicMode, playDeathJingle, playFlagJingle, playGameOverJingle, playWorldClearJingle, playInvincibleMusic, stopInvincibleMusic, playJump, playStomp, playKick, playCoin, playBump, playPowerup, playPowerupAppears, playPipe, playFireball, playOneUp, playBrickSmash, isWorldClearPlaying)
+use aud.(loadAudio, uninitAudio, stopMusic, setMusic, resetMusicMode, playDeathJingle, playFlagJingle, playGameOverJingle, playWorldClearJingle, playInvincibleMusic, stopInvincibleMusic, playJump, playStomp, playKick, playCoin, playBump, playPowerup, playPowerupAppears, playPipe, playFireball, playOneUp, playBrickSmash, isWorldClearPlaying, startTimeWarning, updateTimeWarning, updateCountDown)
 import "sm_mario.leno" as mario
 use mario.(MFrame, marioFrame, marioAlpha, startDeathJump, marioUpdate, adjustMarioPosition, setMarioBottomOfPole)
 import "sm_render.leno" as rnd
@@ -302,7 +302,7 @@ func updateTime() {
     if G.time_timer > 400.0 {
         G.time_timer = 0.0
         G.time = G.time - 1
-        if G.time == 100 { setMusic(2) }
+        if G.time == 100 { startTimeWarning() }   // 先放 out_of_time 警报，放完由 updateTimeWarning() 切加速主题
         else if G.time <= 0 {
             G.time = 0
             G.level_state = LS_FROZEN
@@ -366,6 +366,7 @@ func updateDuringTransition() {
 }
 
 func updateInCastle() {
+    updateCountDown(G.time > 0)   // 城堡倒计时滴答（count_down.ogg）：扣时间期间在播，扣完停
     if G.time > 0 {
         // 剩余时间换分：一帧结算 4 个单位（原来是 3 帧才扣 1 个 ⇒ 满 400 个单位
         // 要跑 1200 帧 ≈ 20 秒，玩家进城堡后得干等十几秒才进下一关；原版是一口气快结算完）
@@ -548,6 +549,7 @@ main() {
                 loadTextures(g_ren)
             }
             G.now = _float(SDL3.getTicks())    // 每帧快照：各模块统一读 g.now
+            updateTimeWarning()                // 时间警报放完 → 自动切加速主题（与关卡状态无关，每帧看一眼）
             if G.state == GS_PLAY {
                 updateLevel()
                 G.frame = G.frame + 1.0
