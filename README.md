@@ -9,7 +9,7 @@
 | `俄罗斯方块/` | `tetris.leno` |
 | `塔防/` | `tower_defense.leno` |
 | `扫雷/` | `minesweeper.leno` |
-| `植物大战僵尸/` | `pvz.leno`（另有地图 / 动画编辑器 `anim_editor.leno`） |
+| `植物大战僵尸测试版/` | `pvz.leno`（另有地图 / 动画编辑器 `anim_editor.leno`） |
 | `飞机大战/` | `plane_war.leno` |
 | `超级玛丽/` | `super_mario.leno`（入口/每帧流程；其余按域拆在 `sm_util` / `sm_types` / `sm_level` / `sm_room` / `sm_items` / `sm_mario` / `sm_render` / `sm_audio`，见入口文件头说明） |
 | `鹈鹕动画/` | `pelican.leno` |
