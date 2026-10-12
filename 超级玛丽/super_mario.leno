@@ -1,793 +1,153 @@
-// super_mario.leno — 超级玛丽 1-1（Leno 版，按 Python 原版重写）
+// super_mario.leno — 超级玛丽（Leno 版，按 Python 原版重写）
 //
-// ★ 本文件是 justinarmstrong 的 pygame 版《Super Mario Bros 1-1》的忠实移植：
+// ★ 本玩法是 justinarmstrong 的 pygame 版《Super Mario Bros 1-1》的忠实移植：
 //   物理常量、马里奥状态机、关卡几何（地面/水管/台阶/砖块/金币箱/旗杆）、
 //   碰撞流程（先 x 后 y、按碰撞组 elif 顺序）、敌人/龟壳/道具行为、旗杆收尾流程，
 //   全部照抄参考实现（D:\软件\超级玛丽-python-master\-python-master\data\**），
 //   只把渲染/音频换成 LenoSDL3 + LenoMusic（写法参考 飞机大战/plane_war.leno）。
 //
 //   参考对应：
-//     data/constants.py          -> 顶部常量
-//     data/components/mario.py   -> marioUpdate 及 mario* 状态函数
-//     data/states/level1.py      -> setupLevel / updateAllSprites / marioX|Y 碰撞 / updateViewport
-//     data/components/enemies.py -> Enemy（Goomba / Koopa）
-//     data/components/*.py       -> 砖块 / 金币箱 / 道具 / 金币 / 旗杆 / 检查点
+//     data/constants.py          -> sm_util.leno（常量）
+//     data/components/mario.py   -> sm_mario.leno（马里奥帧/状态机/碰撞）
+//     data/states/level1.py      -> 本文件（每帧流程 + 收尾）+ sm_level.leno（关卡搭建）
+//     data/components/enemies.py -> sm_items.leno（敌人/龟壳）
+//     data/components/*.py       -> sm_items.leno（砖块/金币箱/道具/金币/碎片/旗杆检查点）
+//
+// ★ 2026-10-12 拆分（原文件 3100+ 行太大，按 LenoMusic 的做法拆成多文件）：
+//     sm_util.leno   常量表 + 纯工具（ovl/drawSpr/drawFrame/pad*）
+//     sm_level.leno  四关几何 / 物品 / 敌人 / 检查点数据 + setupLevel/newMario
+//     sm_room.leno   地下金币房（钻/出水管）
+//     sm_items.leno  砖块 / 金币箱 / 道具 / 金币 / 碎片 / 飘字 / 敌人 / 龟壳 / 位置判定
+//     sm_mario.leno  马里奥帧表 / 状态机 / 碰撞
+//     sm_render.leno 贴图加载 + 全部绘制 / HUD / 菜单
+//     sm_audio.leno  音频（Sound/Sfx 收在模块里，对外只暴露 playXxx 语义化接口）
+//     sm_types.leno  数据结构
+//   本文件只留：全局状态 + 每帧流程（关卡状态机）+ 输入 + main。
+//
+// 跨模块三条铁律（本机实测，别踩）：
+//   1) `use 模块.(A, B)` 只能引入**类型/函数**；常量不行（要写 模块.X），var 也不行
+//   2) 结构体/数组型的 `export var` 到别的模块会退化成 any ⇒ 共享可变状态一律**显式收 Game g**
+//   3) 常量跨模块用不了裸名 ⇒ 本文件用 const 起别名（见下），正文写法与拆分前完全一致
 //
 // 操作：← → 移动   A / 空格 / ↑ 跳跃   S / Shift 加速跑（火球键）   ↓ 蹲下   回车 开始   ESC 退出
 
 import "SDL3" as SDL3
 use SDL3.(Event, Renderer, WindowFlag, Scancode, Font, Flip, ScaleMode)
 import dirs
-import "Music" as audio
-use audio.(Sound, Sfx)
 import "sm_types.leno" as types
 use types.(Mario, Box, Brick, CoinBox, Enemy, Powerup, Coin, Piece, ScorePop, Checkpoint, Keys, Game)
+import "sm_util.leno" as u
+use u.(ovl, drawSpr, drawFrame, pad6, pad3, pad2)
+import "sm_level.leno" as lv
+use lv.(newMario, setupLevel, clearLevelData, addCoinBox, addSolid, addBrick, addCp, addEnemy, addEndCheckpoints, addGroundShared)
+import "sm_items.leno" as it
+use it.(findSolid, findBrick, findCoinBox, findEnemy, findShell, findPowerup, addScore, addScoreOneUp, spawnPieces, checkEnemyOnBrick, brickStartBump, bricksUpdate, coinBoxStartBump, coinboxesUpdate, powerupsUpdate, coinsUpdate, piecesUpdate, popsUpdate, cleanDead, enemyAnimation, adjustEnemyPosition, adjustShellPosition, adjustPowerupPosition)
+import "sm_room.leno" as room
+use room.(checkPipeEntry, warpsUpdate, roomCoinsUpdate, buildCoinRoom)
+import "sm_audio.leno" as aud
+use aud.(loadAudio, uninitAudio, stopMusic, setMusic, resetMusicMode, playDeathJingle, playFlagJingle, playGameOverJingle, playWorldClearJingle, playInvincibleMusic, stopInvincibleMusic, playJump, playStomp, playKick, playCoin, playBump, playPowerup, playPowerupAppears, playPipe, playFireball, playOneUp, playBrickSmash, isWorldClearPlaying)
+import "sm_mario.leno" as mario
+use mario.(MFrame, marioFrame, marioAlpha, startDeathJump, marioUpdate, adjustMarioPosition, setMarioBottomOfPole)
+import "sm_render.leno" as rnd
+use rnd.(loadTextures, renderGame)
 
-// ==================== 常量（constants.py） ====================
-
-var SW = 800
-var SH = 600
-var GROUND_HEIGHT = 538              // SCREEN_HEIGHT - 62
-var SIZE_MULT = 2.5                  // SIZE_MULTIPLIER
-var BRICK_MULT = 2.69                // BRICK_SIZE_MULTIPLIER
-var BG_MULT = 2.679                  // BACKGROUND_MULTIPLER
-
-// MARIO FORCES
-var WALK_ACCEL = 0.15
-var RUN_ACCEL = 0.5                  // ★ 原版写的是 20（配合 MAX_RUN_SPEED=800）——那样按住跑键
-var RUN_SPEED = 12.0                 //   一帧就能瞬移几百像素、穿过一切（正是"碰撞失灵"的根源）。
-var SMALL_TURNAROUND = 0.35          //   这里按 NES 的"跑 = 走 ×2"取 12 / 0.5：跑得明显快，
-var GRAVITY = 1.01                   //   又远小于砖块(43px)、敌人(40px)的尺寸 ⇒ 不会穿模。
-var JUMP_GRAVITY = 0.31
-var JUMP_VEL = -10.0
-var FAST_JUMP_VEL = -12.5
-var MAX_Y_VEL = 11.0
-var MAX_WALK_SPEED = 6.0
-
-// 马里奥状态
-var ST_STAND = 0
-var ST_WALK = 1
-var ST_JUMP = 2
-var ST_FALL = 3
-var ST_SMALLTOBIG = 5
-var ST_BIGTOFIRE = 6
-var ST_BIGTOSMALL = 7
-var ST_FLAGPOLE = 8
-var ST_BOTTOMPOLE = 9
-var ST_TOCASTLE = 10
-var ST_ENDFALL = 11
-var ST_DEATHJUMP = 4
-
-// 敌人状态
-var ES_WALK = 0
-var ES_FALL = 1
-var ES_JUMPEDON = 2
-var ES_SHELLSLIDE = 3
-var ES_DEATHJUMP = 4
-
-// 道具状态
-var PS_REVEAL = 0
-var PS_SLIDE = 1
-var PS_FALL = 2
-var PS_RESTING = 3
-var PS_BOUNCE = 4
-var PS_FLYING = 5
-var PS_BOUNCING = 6
-var PS_EXPLODING = 7
-
-// 箱子 / 砖块状态
-var BS_RESTING = 0
-var BS_BUMPED = 1
-var BS_OPENED = 2
-
-// 箱内容
-var CT_NONE = 0
-var CT_COIN = 1
-var CT_MUSHROOM = 2
-var CT_FIREFLOWER = 3
-var CT_STAR = 4
-var CT_SIXCOINS = 5
-var CT_LIFE = 6
-
-// 道具种类
-var PK_MUSHROOM = 0
-var PK_FIREFLOWER = 1
-var PK_STAR = 2
-var PK_LIFE = 3
-var PK_FIREBALL = 4
-
-// 敌人种类
-var EK_GOOMBA = 0
-var EK_KOOPA = 1
-
-// 关卡状态
-var LS_NOTFROZEN = 0
-var LS_FROZEN = 1
-var LS_CASTLE = 2
-var LS_FIREWORKS = 3
-
-// 游戏状态
-var GS_MENU = 0
-var GS_PLAY = 1
-var GS_OVER = 2
-var GS_CLEAR = 3
-
-var MAX_LEVEL = 4             // 共 1-1 ~ 1-4 关
-
-// 地下金币房（1-1 高水管 ↓ 进入）
-var ROOM_W = 900.0                  // 房间宽度（地面铺满，相机夹紧也用它）
-var ROOM_FLOOR_Y = 538.0            // 房间地面高度：与主关卡一致 ⇒ 物理完全不用改
-var ROOM_PIPE_W = 83.0
-var ROOM_PIPE_H = 86.0              // 房间里两根水管只有 86 高 ⇒ 一跳就能站上去（172 高是跳不上去的）
-var ROOM_PIPE_TOP = 452.0           // 房间水管顶（452 = 538 - 86）
-var LEVEL1_PIPE_TOP = 366.0         // 1-1 里那根高水管的顶（进入点 / 出来点都在这）
-var ROOM_ENTRY_X = 40.0             // 房间里的入口水管
-var ROOM_EXIT_X = 620.0             // 房间里的出口水管
-var ROOM_WALL_X = 745.0             // 右端砖墙（挡住马里奥，别掉出房间）
-var LEVEL1_ENTRY_PIPE = 1973.0      // 1-1 里唯一能钻的那根高水管
-var LEVEL1_RETURN_PIPE = 2445.0     // 出来时站到 1-1 的下一根水管顶上
-var LEVEL_WIDTH = 9087.0            // 关卡总长（相机夹紧用；进金币房时会临时改成房间宽）
-var WARP_SINK_FRAMES = 30.0         // 钻管子下沉动画帧数
-
-// ==================== 精灵帧表（每帧 4 个 int：sx sy sw sh） ====================
-
-// mario_bros.png —— 小马里奥（右向）
-var M_SMALL = [178,32,12,16, 80,32,15,16, 96,32,16,16, 112,32,16,16, 144,32,16,16,
-               130,32,14,16, 160,32,15,16, 320,8,16,24, 241,33,16,16, 194,32,12,16, 210,33,12,16]
-// 绿色 / 红色 / 黑色小马里奥（无敌闪烁）
-var M_SMALL_G = [178,224,12,16, 80,224,15,16, 96,224,16,16, 112,224,15,16, 144,224,16,16, 130,224,14,16]
-var M_SMALL_R = [178,272,12,16, 80,272,15,16, 96,272,16,16, 112,272,15,16, 144,272,16,16, 130,272,14,16]
-var M_SMALL_K = [178,176,12,16, 80,176,15,16, 96,176,16,16, 112,176,15,16, 144,176,16,16, 130,176,14,16]
-// 大马里奥
-var M_BIG = [176,0,16,32, 81,0,16,32, 97,0,15,32, 113,0,15,32, 144,0,16,32,
-             128,0,16,32, 336,0,16,32, 160,10,16,22, 272,2,16,29, 193,2,16,30, 209,2,16,29]
-var M_BIG_G = [176,192,16,32, 81,192,16,32, 97,192,15,32, 113,192,15,32, 144,192,16,32,
-               128,192,16,32, 336,192,16,32, 160,202,16,22]
-var M_BIG_R = [176,240,16,32, 81,240,16,32, 97,240,15,32, 113,240,15,32, 144,240,16,32,
-               128,240,16,32, 336,240,16,32, 160,250,16,22]
-var M_BIG_K = [176,144,16,32, 81,144,16,32, 97,144,15,32, 113,144,15,32, 144,144,16,32,
-               128,144,16,32, 336,144,16,32, 160,154,16,22]
-// 火球马里奥
-var M_FIRE = [176,48,16,32, 81,48,16,32, 97,48,15,32, 113,48,15,32, 144,48,16,32,
-              128,48,16,32, 336,48,16,32, 160,58,16,22, 0,0,0,0, 193,50,16,29, 209,50,16,29]
-
-// smb_enemies_sheet.png
-var F_GOOMBA = [0,4,16,16, 30,4,16,16, 61,0,16,16, 30,4,16,16]     // 帧 3 = 帧 1 垂直翻转
-var F_KOOPA  = [150,0,16,24, 180,0,16,24, 360,5,16,15, 360,5,16,15] // 帧 3 = 帧 2 垂直翻转
-
-// item_objects.png
-var F_MUSHROOM = [0,0,16,16]
-var F_LIFE = [16,0,16,16]
-var F_FLOWER = [0,32,16,16, 16,32,16,16, 32,32,16,16, 48,32,16,16]
-var F_STAR = [1,48,15,16, 17,48,15,16, 33,48,15,16, 49,48,15,16]
-var F_COIN = [52,113,8,14, 4,113,8,14, 20,113,8,14, 36,113,8,14]
-var F_FIREBALL = [96,144,8,8, 104,144,8,8, 96,152,8,8, 104,152,8,8]
-var F_FBEXP = [112,144,16,16, 112,160,16,16, 112,176,16,16]
-var F_PIECE = [68,20,8,8]
-var F_FLAG = [128,32,16,16]                 // 旗杆上的旗
-var F_CASTLEFLAG = [129,2,14,14]            // 城堡上的旗
-
-// tile_set.png
-var F_BRICK = [16,0,16,16, 432,0,16,16]
-var F_COINBOX = [384,0,16,16, 400,0,16,16, 416,0,16,16, 432,0,16,16]
-var F_POLE = [263,144,2,16]
-var F_FINIAL = [228,120,8,8]
-
-// 数据结构见 sm_types.leno（import/use 在文件顶部）
+// ---- 常量别名（单一数据源在 sm_util.leno：跨模块常量只能 u.X 访问） ----
+const int SW = u.SW
+const int SH = u.SH
+const int GROUND_HEIGHT = u.GROUND_HEIGHT
+const float SIZE_MULT = u.SIZE_MULT
+const float BRICK_MULT = u.BRICK_MULT
+const float BG_MULT = u.BG_MULT
+const float WALK_ACCEL = u.WALK_ACCEL
+const float RUN_ACCEL = u.RUN_ACCEL
+const float RUN_SPEED = u.RUN_SPEED
+const float SMALL_TURNAROUND = u.SMALL_TURNAROUND
+const float GRAVITY = u.GRAVITY
+const float JUMP_GRAVITY = u.JUMP_GRAVITY
+const float JUMP_VEL = u.JUMP_VEL
+const float FAST_JUMP_VEL = u.FAST_JUMP_VEL
+const float MAX_Y_VEL = u.MAX_Y_VEL
+const float MAX_WALK_SPEED = u.MAX_WALK_SPEED
+const int ST_STAND = u.ST_STAND
+const int ST_WALK = u.ST_WALK
+const int ST_JUMP = u.ST_JUMP
+const int ST_FALL = u.ST_FALL
+const int ST_SMALLTOBIG = u.ST_SMALLTOBIG
+const int ST_BIGTOFIRE = u.ST_BIGTOFIRE
+const int ST_BIGTOSMALL = u.ST_BIGTOSMALL
+const int ST_FLAGPOLE = u.ST_FLAGPOLE
+const int ST_BOTTOMPOLE = u.ST_BOTTOMPOLE
+const int ST_TOCASTLE = u.ST_TOCASTLE
+const int ST_ENDFALL = u.ST_ENDFALL
+const int ST_DEATHJUMP = u.ST_DEATHJUMP
+const int ES_WALK = u.ES_WALK
+const int ES_FALL = u.ES_FALL
+const int ES_JUMPEDON = u.ES_JUMPEDON
+const int ES_SHELLSLIDE = u.ES_SHELLSLIDE
+const int ES_DEATHJUMP = u.ES_DEATHJUMP
+const int PS_REVEAL = u.PS_REVEAL
+const int PS_SLIDE = u.PS_SLIDE
+const int PS_FALL = u.PS_FALL
+const int PS_RESTING = u.PS_RESTING
+const int PS_BOUNCE = u.PS_BOUNCE
+const int PS_FLYING = u.PS_FLYING
+const int PS_BOUNCING = u.PS_BOUNCING
+const int PS_EXPLODING = u.PS_EXPLODING
+const int BS_RESTING = u.BS_RESTING
+const int BS_BUMPED = u.BS_BUMPED
+const int BS_OPENED = u.BS_OPENED
+const int CT_NONE = u.CT_NONE
+const int CT_COIN = u.CT_COIN
+const int CT_MUSHROOM = u.CT_MUSHROOM
+const int CT_FIREFLOWER = u.CT_FIREFLOWER
+const int CT_STAR = u.CT_STAR
+const int CT_SIXCOINS = u.CT_SIXCOINS
+const int CT_LIFE = u.CT_LIFE
+const int PK_MUSHROOM = u.PK_MUSHROOM
+const int PK_FIREFLOWER = u.PK_FIREFLOWER
+const int PK_STAR = u.PK_STAR
+const int PK_LIFE = u.PK_LIFE
+const int PK_FIREBALL = u.PK_FIREBALL
+const int EK_GOOMBA = u.EK_GOOMBA
+const int EK_KOOPA = u.EK_KOOPA
+const int LS_NOTFROZEN = u.LS_NOTFROZEN
+const int LS_FROZEN = u.LS_FROZEN
+const int LS_CASTLE = u.LS_CASTLE
+const int LS_FIREWORKS = u.LS_FIREWORKS
+const int GS_MENU = u.GS_MENU
+const int GS_PLAY = u.GS_PLAY
+const int GS_OVER = u.GS_OVER
+const int GS_CLEAR = u.GS_CLEAR
+const int MAX_LEVEL = u.MAX_LEVEL
+const float ROOM_W = u.ROOM_W
+const float ROOM_FLOOR_Y = u.ROOM_FLOOR_Y
+const float ROOM_PIPE_W = u.ROOM_PIPE_W
+const float ROOM_PIPE_H = u.ROOM_PIPE_H
+const float ROOM_PIPE_TOP = u.ROOM_PIPE_TOP
+const float LEVEL1_PIPE_TOP = u.LEVEL1_PIPE_TOP
+const float ROOM_ENTRY_X = u.ROOM_ENTRY_X
+const float ROOM_EXIT_X = u.ROOM_EXIT_X
+const float ROOM_WALL_X = u.ROOM_WALL_X
+const float LEVEL1_ENTRY_PIPE = u.LEVEL1_ENTRY_PIPE
+const float LEVEL1_RETURN_PIPE = u.LEVEL1_RETURN_PIPE
+const float LEVEL_WIDTH = u.LEVEL_WIDTH
+const float WARP_SINK_FRAMES = u.WARP_SINK_FRAMES
+const float POLE_BASE_TOP = u.POLE_BASE_TOP
 
 // ==================== 全局 ====================
 
+// 唯一的可变状态容器：按键 G.K、马里奥 G.mario、关卡数据（solids/bricks/...）、分数、时间…
+// 拆分后各模块不共享全局，改为"显式收 Game g"（见 super_mario.leno 头部的三条铁律）
 Game G = new Game()
-Game GCACHE = new Game()      // 关卡重置用的模板快照（Python 每次 new Level1() 重新搭关卡）
-Game MENU = new Game()        // 菜单用的空实例（避免 G 为 null）
 
-Keys K = new Keys()
-float NOW = 0
-Font gFont
-
-Ptr[u8] g_ren = null
-Ptr[u8] T_BG = null
-Ptr[u8] T_MARIO = null
-Ptr[u8] T_ENEMY = null
-Ptr[u8] T_ITEM = null
-Ptr[u8] T_TILE = null
-
-Sound bgm
-Sound bgmFast
-Sound musDeath
-Sound musClear
-Sound musWorldClear
-Sound musOver
-Sound musInvincible
-Sound musFlag
-Sfx sfxSmallJump
-Sfx sfxBigJump
-Sfx sfxStomp
-Sfx sfxKick
-Sfx sfxCoin
-Sfx sfxBump
-Sfx sfxPowerup
-Sfx sfxPowerupApp
-Sfx sfxPipe
-Sfx sfxFireball
-Sfx sfxOneUp
-Sfx sfxBrickSmash
-
-bool g_audio = false
-float g_music_mode = 0        // 0 无 1 普通 2 加速
+Ptr[u8] g_ren = null                // 渲染器句柄（只在加载贴图时要）
 
 // 自检用（环境变量驱动，正常玩不受影响）
 string mShot = ""
 int mShotAt = 2
 int mFrames = 0
 
-// ==================== 工具 ====================
-
-func ovl(float ax, float ay, float aw, float ah, float bx, float by, float bw, float bh): bool {
-    return ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
-}
-
-// 画精灵：sx/sy/sw/sh 为源矩形；flipH/flipV 用负宽高实现（SDL_RenderTexture 支持）
-func drawSpr(Renderer r, Ptr[u8] tex, int sx, int sy, int sw, int sh,
-             float dx, float dy, float dw, float dh, bool flipH, bool flipV) {
-    if tex == null { return }
-    if sw <= 0 or sh <= 0 { return }
-    // ★ 翻转只能用"负的目标宽/高"：这套 SDL3 里负的**源**宽高会整块画不出来
-    //   （马里奥朝左就消失就是这个坑），实测负 dst 才是镜像 ✓
-    float ddx = dx
-    float ddy = dy
-    float ddw = dw
-    float ddh = dh
-    if flipH { ddx = dx + dw; ddw = 0.0 - dw }
-    if flipV { ddy = dy + dh; ddh = 0.0 - dh }
-    r.drawTextureFromTo(tex, _float(sx), _float(sy), _float(sw), _float(sh), ddx, ddy, ddw, ddh)
-}
-
-func drawFrame(Renderer r, Ptr[u8] tex, Array[int] a, int idx,
-               float dx, float dy, float scale, bool flipH, bool flipV) {
-    if a.len() < 4 { return }
-    int n = a.len() / 4
-    if idx < 0 { idx = 0 }
-    if idx >= n { idx = idx - (idx / n) * n }
-    int o = idx * 4
-    drawSpr(r, tex, a[o], a[o+1], a[o+2], a[o+3], dx, dy,
-            _float(a[o+2]) * scale, _float(a[o+3]) * scale, flipH, flipV)
-}
-
-func pad6(int v): string {
-    string s = _str(v)
-    while s.len() < 6 { s = "0" + s }
-    return s
-}
-
-func pad3(int v): string {
-    string s = _str(v)
-    while s.len() < 3 { s = "0" + s }
-    return s
-}
-
-func pad2(int v): string {
-    string s = _str(v)
-    while s.len() < 2 { s = "0" + s }
-    return s
-}
-
-// ==================== 音频 ====================
-
-func loadAudio() {
-    bgm = audio.createSound("sound/main_theme.ogg")
-    bgmFast = audio.createSound("sound/main_theme_sped_up.ogg")
-    musDeath = audio.createSound("sound/death.wav")
-    musClear = audio.createSound("sound/stage_clear.wav")
-    musWorldClear = audio.createSound("sound/world_clear.wav")
-    musOver = audio.createSound("sound/game_over.ogg")
-    musInvincible = audio.createSound("sound/invincible.ogg")
-    musFlag = audio.createSound("sound/flagpole.wav")
-    if not bgm.ok {
-        print("[提示] 音频未加载（静音运行）")
-        g_audio = false
-        return
-    }
-    bgm.setLooping(true)
-    bgm.setVolume(0.45)
-    bgmFast.setLooping(true)
-    bgmFast.setVolume(0.45)
-    musInvincible.setLooping(true)
-    musInvincible.setVolume(0.5)
-    sfxSmallJump = audio.createSfx("sound/small_jump.ogg", 3, 0.55)
-    sfxBigJump = audio.createSfx("sound/big_jump.ogg", 3, 0.55)
-    sfxStomp = audio.createSfx("sound/stomp.ogg", 3, 0.6)
-    sfxKick = audio.createSfx("sound/kick.ogg", 3, 0.6)
-    sfxCoin = audio.createSfx("sound/coin.ogg", 3, 0.5)
-    sfxBump = audio.createSfx("sound/bump.ogg", 3, 0.5)
-    sfxPowerup = audio.createSfx("sound/powerup.ogg", 2, 0.6)
-    sfxPowerupApp = audio.createSfx("sound/powerup_appears.ogg", 2, 0.6)
-    sfxPipe = audio.createSfx("sound/pipe.ogg", 2, 0.5)
-    sfxFireball = audio.createSfx("sound/fireball.ogg", 3, 0.5)
-    sfxOneUp = audio.createSfx("sound/one_up.ogg", 2, 0.6)
-    sfxBrickSmash = audio.createSfx("sound/brick_smash.ogg", 3, 0.55)
-    g_audio = true
-}
-
-func stopMusic() {
-    if not g_audio { return }
-    bgm.stop(); bgmFast.stop(); musInvincible.stop()
-}
-
-func setMusic(int mode) {      // 1 普通主题 2 加速主题
-    if not g_audio { return }
-    if g_music_mode == mode { return }
-    stopMusic()
-    g_music_mode = mode
-    if mode == 1 { bgm.play() } else if mode == 2 { bgmFast.play() }
-}
-
-func playJingle(Sound s) {
-    if not g_audio { return }
-    stopMusic()
-    s.play()
-}
-
-// ==================== 关卡搭建（level1.py setup_*） ====================
-
-func addSolid(float x, float y, float w, float h) {
-    Box b = new Box()
-    b.x = x; b.y = y; b.w = w; b.h = h
-    G.solids.add(b)
-}
-
-func buildSolids() {
-    G.solids = []
-    // setup_ground：4 段地面（中间两处是坑）
-    addSolid(0.0, 538.0, 2953.0, 60.0)
-    addSolid(3048.0, 538.0, 635.0, 60.0)
-    addSolid(3819.0, 538.0, 2735.0, 60.0)
-    addSolid(6647.0, 538.0, 2300.0, 60.0)
-    // setup_pipes：6 根水管
-    addSolid(1202.0, 452.0, 83.0, 82.0)
-    addSolid(1631.0, 409.0, 83.0, 140.0)
-    addSolid(1973.0, 366.0, 83.0, 170.0)
-    addSolid(2445.0, 366.0, 83.0, 170.0)
-    addSolid(6989.0, 452.0, 83.0, 82.0)
-    addSolid(7675.0, 452.0, 83.0, 82.0)
-    // setup_steps：台阶
-    addSolid(5745.0, 495.0, 40.0, 44.0)
-    addSolid(5788.0, 452.0, 40.0, 44.0)
-    addSolid(5831.0, 409.0, 40.0, 44.0)
-    addSolid(5874.0, 366.0, 40.0, 176.0)
-    addSolid(6001.0, 366.0, 40.0, 176.0)
-    addSolid(6044.0, 408.0, 40.0, 40.0)
-    addSolid(6087.0, 452.0, 40.0, 40.0)
-    addSolid(6130.0, 495.0, 40.0, 40.0)
-    addSolid(6345.0, 495.0, 40.0, 40.0)
-    addSolid(6388.0, 452.0, 40.0, 40.0)
-    addSolid(6431.0, 409.0, 40.0, 40.0)
-    addSolid(6474.0, 366.0, 40.0, 40.0)
-    addSolid(6517.0, 366.0, 40.0, 176.0)
-    addSolid(6644.0, 366.0, 40.0, 176.0)
-    addSolid(6687.0, 408.0, 40.0, 40.0)
-    addSolid(6728.0, 452.0, 40.0, 40.0)
-    addSolid(6771.0, 495.0, 40.0, 40.0)
-    addSolid(7760.0, 495.0, 40.0, 40.0)
-    addSolid(7803.0, 452.0, 40.0, 40.0)
-    addSolid(7845.0, 409.0, 40.0, 40.0)
-    addSolid(7888.0, 366.0, 40.0, 40.0)
-    addSolid(7931.0, 323.0, 40.0, 40.0)
-    addSolid(7974.0, 280.0, 40.0, 40.0)
-    addSolid(8017.0, 237.0, 40.0, 40.0)
-    addSolid(8060.0, 194.0, 40.0, 40.0)
-    addSolid(8103.0, 194.0, 40.0, 360.0)
-    addSolid(8488.0, 495.0, 40.0, 40.0)
-}
-
-func addBrick(float x, float y, int contents) {
-    Brick b = new Brick()
-    b.x = x; b.y = y; b.rest_y = y
-    b.contents = contents
-    if contents == CT_SIXCOINS { b.coin_total = 6 }
-    G.bricks.add(b)
-}
-
-func addCoinBox(float x, float y, int contents) {
-    CoinBox c = new CoinBox()
-    c.x = x; c.y = y; c.rest_y = y
-    c.contents = contents
-    G.coinboxes.add(c)
-}
-
-func addCp(float x, int kind, int group, float y, float w, float h) {
-    Checkpoint c = new Checkpoint()
-    c.x = x; c.y = y; c.w = w; c.h = h
-    c.kind = kind; c.group = group
-    G.cps.add(c)
-}
-
-func addEnemy(int kind, int group, float home_y) {
-    Enemy e = new Enemy()
-    e.kind = kind; e.group = group; e.home_y = home_y
-    e.direction = 0
-    e.x_vel = -2.0
-    if kind == EK_GOOMBA { e.w = 40.0; e.h = 40.0 } else { e.w = 40.0; e.h = 60.0 }
-    e.active = false
-    G.enemies.add(e)
-}
-
-func clearLevelData() {
-    G.solids = []
-    G.bricks = []
-    G.coinboxes = []
-    G.enemies = []
-    G.shells = []
-    G.dying = []
-    G.powerups = []
-    G.coins_arr = []
-    G.pieces = []
-    G.pops = []
-    G.cps = []
-    G.flag_x = 8505.0
-    G.flag_y = 100.0
-    G.flag_state = 0
-    G.castle_flag_y = 322.0
-    G.castle_flag_on = false
-    G.level_state = LS_NOTFROZEN
-    G.time = 400
-    G.time_timer = 0.0
-    G.death_wait = 0.0
-    G.clear_timer = 0.0
-    G.banner_timer = 0.0
-}
-
-// 按关卡号搭关卡；结构对应参考实现的 setup_ground / setup_pipes / setup_steps /
-// setup_bricks / setup_coin_boxes / setup_enemies / setup_checkpoints。
-// ⚠ 地面与坑沿用背景图 level_1.png 里画好的两处坑（2953-3048、6554-6647），
-//   所以四关共用同一份地面几何；关卡差异体现在水管/台阶/砖块/金币箱/敌人/检查点上。
-func setupLevel(int lv) {
-    // 重开关卡 / 复活 / 切关时把金币房状态一并清掉
-    // （进房间走的是 buildCoinRoom，不经过 setupLevel，所以不会被误清）
-    G.in_room = false
-    G.warp_kind = 0
-    G.warp_t = 0.0
-    G.room_coins = []
-    // ★ 必须把关卡总长还回来：金币房把它改成了 900，不还原的话相机
-    //   clamp 到 level_w - SW = 100 ⇒ 一出房间往右走画面就跳回关卡开头，
-    //   马里奥直接跑出屏幕外 ✗（"出来后显示不正常"就是这个）
-    G.level_w = LEVEL_WIDTH
-    clearLevelData()
-    if lv == 1 {
-        buildSolids()
-
-    // setup_bricks（31 块）
-    addBrick(858.0, 365.0, CT_NONE)
-    addBrick(944.0, 365.0, CT_NONE)
-    addBrick(1030.0, 365.0, CT_NONE)
-    addBrick(3299.0, 365.0, CT_NONE)
-    addBrick(3385.0, 365.0, CT_NONE)
-    addBrick(3430.0, 193.0, CT_NONE)
-    addBrick(3473.0, 193.0, CT_NONE)
-    addBrick(3516.0, 193.0, CT_NONE)
-    addBrick(3559.0, 193.0, CT_NONE)
-    addBrick(3602.0, 193.0, CT_NONE)
-    addBrick(3645.0, 193.0, CT_NONE)
-    addBrick(3688.0, 193.0, CT_NONE)
-    addBrick(3731.0, 193.0, CT_NONE)
-    addBrick(3901.0, 193.0, CT_NONE)
-    addBrick(3944.0, 193.0, CT_NONE)
-    addBrick(3987.0, 193.0, CT_NONE)
-    addBrick(4030.0, 365.0, CT_SIXCOINS)
-    addBrick(4287.0, 365.0, CT_NONE)
-    addBrick(4330.0, 365.0, CT_STAR)
-    addBrick(5058.0, 365.0, CT_NONE)
-    addBrick(5187.0, 193.0, CT_NONE)
-    addBrick(5230.0, 193.0, CT_NONE)
-    addBrick(5273.0, 193.0, CT_NONE)
-    addBrick(5488.0, 193.0, CT_NONE)
-    addBrick(5574.0, 193.0, CT_NONE)
-    addBrick(5617.0, 193.0, CT_NONE)
-    addBrick(5531.0, 365.0, CT_NONE)
-    addBrick(5574.0, 365.0, CT_NONE)
-    addBrick(7202.0, 365.0, CT_NONE)
-    addBrick(7245.0, 365.0, CT_NONE)
-    addBrick(7331.0, 365.0, CT_NONE)
-
-    // setup_coin_boxes（12 个）
-    addCoinBox(685.0, 365.0, CT_COIN)
-    addCoinBox(901.0, 365.0, CT_MUSHROOM)
-    addCoinBox(987.0, 365.0, CT_COIN)
-    addCoinBox(943.0, 193.0, CT_COIN)
-    addCoinBox(3342.0, 365.0, CT_MUSHROOM)
-    addCoinBox(4030.0, 193.0, CT_COIN)
-    addCoinBox(4544.0, 365.0, CT_COIN)
-    addCoinBox(4672.0, 365.0, CT_COIN)
-    addCoinBox(4672.0, 193.0, CT_MUSHROOM)
-    addCoinBox(4800.0, 365.0, CT_COIN)
-    addCoinBox(5531.0, 193.0, CT_COIN)
-    addCoinBox(7288.0, 365.0, CT_COIN)
-
-    // setup_enemies：16 只栗子怪 + 1 只乌龟，分 10 组
-    addEnemy(EK_GOOMBA, 1, 538.0)
-    addEnemy(EK_GOOMBA, 2, 538.0)
-    addEnemy(EK_GOOMBA, 3, 538.0)
-    addEnemy(EK_GOOMBA, 3, 538.0)
-    addEnemy(EK_GOOMBA, 4, 193.0)
-    addEnemy(EK_GOOMBA, 4, 193.0)
-    addEnemy(EK_GOOMBA, 5, 538.0)
-    addEnemy(EK_GOOMBA, 5, 538.0)
-    addEnemy(EK_KOOPA, 6, 538.0)
-    addEnemy(EK_GOOMBA, 7, 538.0)
-    addEnemy(EK_GOOMBA, 7, 538.0)
-    addEnemy(EK_GOOMBA, 8, 538.0)
-    addEnemy(EK_GOOMBA, 8, 538.0)
-    addEnemy(EK_GOOMBA, 9, 538.0)
-    addEnemy(EK_GOOMBA, 9, 538.0)
-    addEnemy(EK_GOOMBA, 10, 538.0)
-    addEnemy(EK_GOOMBA, 10, 538.0)
-
-    // setup_checkpoints
-    addCp(510.0, 0, 1, 0.0, 10.0, 600.0)
-    addCp(1400.0, 0, 2, 0.0, 10.0, 600.0)
-    addCp(1740.0, 0, 3, 0.0, 10.0, 600.0)
-    addCp(3080.0, 0, 4, 0.0, 10.0, 600.0)
-    addCp(3750.0, 0, 5, 0.0, 10.0, 600.0)
-    addCp(4150.0, 0, 6, 0.0, 10.0, 600.0)
-    addCp(4470.0, 0, 7, 0.0, 10.0, 600.0)
-    addCp(4950.0, 0, 8, 0.0, 10.0, 600.0)
-    addCp(5100.0, 0, 9, 0.0, 10.0, 600.0)
-    addCp(6800.0, 0, 10, 0.0, 10.0, 600.0)
-    addCp(8504.0, 1, 0, 5.0, 6.0, 600.0)
-    addCp(8775.0, 2, 0, 0.0, 10.0, 600.0)
-    addCp(2740.0, 3, 12, 360.0, 40.0, 12.0)
-    } else if lv == 2 {
-        buildSolids2()
-        items2()
-    } else if lv == 3 {
-        buildSolids3()
-        items3()
-    } else {
-        buildSolids4()
-        items4()
-    }
-    // setup_mario：站在地面高度、视野左侧 +110
-    G.mario = newMario(G.viewport_x + 110.0)
-    G.banner_timer = 1500.0          // 开场 "1-N" 横幅
-}
-
-// ==================== 共用地面 / 收尾检查点 ====================
-
-// 四关共用：地面 4 段 + 旗杆底座（坑沿用背景图里画好的两处）
-func addGroundShared() {
-    addSolid(0.0, 538.0, 2953.0, 60.0)
-    addSolid(3048.0, 538.0, 635.0, 60.0)
-    addSolid(3819.0, 538.0, 2735.0, 60.0)
-    addSolid(6647.0, 538.0, 2300.0, 60.0)
-    addSolid(8488.0, 495.0, 40.0, 40.0)
-}
-
-func addEndCheckpoints() {
-    addCp(8504.0, 1, 0, 5.0, 6.0, 600.0)     // 旗杆
-    addCp(8775.0, 2, 0, 0.0, 10.0, 600.0)     // 城堡
-    addCp(2740.0, 3, 12, 360.0, 40.0, 12.0)   // 隐藏 1UP
-}
-
-// ==================== 1-2「水管迷阵」====================
-
-func buildSolids2() {
-    addGroundShared()
-    addSolid(1202.0, 452.0, 83.0, 82.0)
-    addSolid(1700.0, 409.0, 83.0, 140.0)
-    addSolid(2600.0, 366.0, 83.0, 170.0)
-    addSolid(4400.0, 366.0, 83.0, 170.0)
-    addSolid(5300.0, 409.0, 83.0, 140.0)
-    addSolid(6100.0, 452.0, 83.0, 82.0)
-    addSolid(7400.0, 452.0, 83.0, 82.0)
-}
-
-func items2() {
-    addBrick(860.0, 365.0, CT_NONE)
-    addBrick(946.0, 365.0, CT_NONE)
-    addBrick(1032.0, 365.0, CT_NONE)
-    addBrick(3200.0, 193.0, CT_NONE)
-    addBrick(3286.0, 193.0, CT_NONE)
-    addBrick(3372.0, 193.0, CT_SIXCOINS)
-    addBrick(3458.0, 193.0, CT_NONE)
-    addBrick(3544.0, 193.0, CT_NONE)
-    addBrick(4200.0, 365.0, CT_NONE)
-    addBrick(4286.0, 365.0, CT_STAR)
-    addBrick(5600.0, 365.0, CT_NONE)
-    addBrick(5686.0, 365.0, CT_NONE)
-    addBrick(5772.0, 365.0, CT_NONE)
-    addBrick(7000.0, 193.0, CT_NONE)
-    addBrick(7086.0, 193.0, CT_NONE)
-    addBrick(7172.0, 193.0, CT_NONE)
-    addBrick(7258.0, 193.0, CT_NONE)
-
-    addCoinBox(1200.0, 365.0, CT_COIN)
-    addCoinBox(1286.0, 365.0, CT_MUSHROOM)
-    addCoinBox(3300.0, 365.0, CT_COIN)
-    addCoinBox(4600.0, 193.0, CT_COIN)
-    addCoinBox(6200.0, 365.0, CT_MUSHROOM)
-    addCoinBox(7500.0, 365.0, CT_COIN)
-
-    addEnemy(EK_GOOMBA, 1, 538.0)
-    addEnemy(EK_GOOMBA, 2, 538.0)
-    addEnemy(EK_GOOMBA, 3, 538.0)
-    addEnemy(EK_GOOMBA, 3, 538.0)
-    addEnemy(EK_GOOMBA, 4, 193.0)
-    addEnemy(EK_GOOMBA, 4, 193.0)
-    addEnemy(EK_GOOMBA, 5, 538.0)
-    addEnemy(EK_GOOMBA, 5, 538.0)
-    addEnemy(EK_KOOPA, 6, 538.0)
-    addEnemy(EK_GOOMBA, 7, 538.0)
-    addEnemy(EK_GOOMBA, 7, 538.0)
-    addEnemy(EK_GOOMBA, 8, 538.0)
-    addEnemy(EK_KOOPA, 9, 538.0)
-    addEnemy(EK_GOOMBA, 9, 538.0)
-    addEnemy(EK_GOOMBA, 10, 538.0)
-    addEnemy(EK_GOOMBA, 10, 538.0)
-
-    addCp(600.0, 0, 1, 0.0, 10.0, 600.0)
-    addCp(1400.0, 0, 2, 0.0, 10.0, 600.0)
-    addCp(2200.0, 0, 3, 0.0, 10.0, 600.0)
-    addCp(3000.0, 0, 4, 0.0, 10.0, 600.0)
-    addCp(4000.0, 0, 5, 0.0, 10.0, 600.0)
-    addCp(4800.0, 0, 6, 0.0, 10.0, 600.0)
-    addCp(5400.0, 0, 7, 0.0, 10.0, 600.0)
-    addCp(6000.0, 0, 8, 0.0, 10.0, 600.0)
-    addCp(6800.0, 0, 9, 0.0, 10.0, 600.0)
-    addCp(7600.0, 0, 10, 0.0, 10.0, 600.0)
-    addEndCheckpoints()
-}
-
-// ==================== 1-3「砖梯迷宫」====================
-
-func buildSolids3() {
-    addGroundShared()
-    // 上楼梯 / 下楼梯（参考实现 setup_steps 的写法）
-    addSolid(1000.0, 495.0, 40.0, 44.0)
-    addSolid(1043.0, 452.0, 40.0, 44.0)
-    addSolid(1086.0, 409.0, 40.0, 44.0)
-    addSolid(1129.0, 366.0, 40.0, 176.0)
-    addSolid(1400.0, 366.0, 40.0, 176.0)
-    addSolid(1443.0, 409.0, 40.0, 40.0)
-    addSolid(1486.0, 452.0, 40.0, 40.0)
-    addSolid(1529.0, 495.0, 40.0, 40.0)
-    addSolid(3000.0, 495.0, 40.0, 44.0)
-    addSolid(3043.0, 452.0, 40.0, 44.0)
-    addSolid(3086.0, 409.0, 40.0, 44.0)
-    addSolid(3129.0, 366.0, 40.0, 44.0)
-    addSolid(3400.0, 194.0, 40.0, 360.0)
-    // 高台阶（通往旗杆）
-    addSolid(6200.0, 495.0, 40.0, 40.0)
-    addSolid(6243.0, 452.0, 40.0, 40.0)
-    addSolid(6286.0, 409.0, 40.0, 40.0)
-    addSolid(6329.0, 366.0, 40.0, 40.0)
-    addSolid(6372.0, 323.0, 40.0, 40.0)
-    addSolid(6415.0, 280.0, 40.0, 40.0)
-    addSolid(6458.0, 237.0, 40.0, 40.0)
-    addSolid(6501.0, 194.0, 40.0, 40.0)
-    addSolid(6544.0, 194.0, 40.0, 360.0)
-    // 水管
-    addSolid(2200.0, 452.0, 83.0, 82.0)
-    addSolid(4400.0, 409.0, 83.0, 140.0)
-    addSolid(5600.0, 452.0, 83.0, 82.0)
-}
-
-func items3() {
-    addBrick(1700.0, 365.0, CT_NONE)
-    addBrick(1786.0, 365.0, CT_NONE)
-    addBrick(1872.0, 365.0, CT_NONE)
-    addBrick(2600.0, 365.0, CT_SIXCOINS)
-    addBrick(3500.0, 193.0, CT_NONE)
-    addBrick(3586.0, 193.0, CT_NONE)
-    addBrick(3672.0, 193.0, CT_STAR)
-    addBrick(3758.0, 193.0, CT_NONE)
-    addBrick(3844.0, 193.0, CT_NONE)
-    addBrick(3930.0, 193.0, CT_NONE)
-    addBrick(4700.0, 193.0, CT_NONE)
-    addBrick(4786.0, 193.0, CT_NONE)
-    addBrick(4872.0, 193.0, CT_NONE)
-    addBrick(4958.0, 193.0, CT_NONE)
-    addBrick(5800.0, 365.0, CT_NONE)
-    addBrick(5886.0, 365.0, CT_NONE)
-    addBrick(5972.0, 365.0, CT_NONE)
-    addBrick(7000.0, 365.0, CT_NONE)
-    addBrick(7086.0, 365.0, CT_NONE)
-    addBrick(7172.0, 365.0, CT_NONE)
-
-    addCoinBox(800.0, 365.0, CT_COIN)
-    addCoinBox(2500.0, 365.0, CT_MUSHROOM)
-    addCoinBox(4200.0, 193.0, CT_COIN)
-    addCoinBox(5300.0, 365.0, CT_COIN)
-    addCoinBox(6700.0, 365.0, CT_MUSHROOM)
-
-    addEnemy(EK_GOOMBA, 1, 538.0)
-    addEnemy(EK_GOOMBA, 2, 538.0)
-    addEnemy(EK_GOOMBA, 3, 538.0)
-    addEnemy(EK_GOOMBA, 3, 538.0)
-    addEnemy(EK_GOOMBA, 4, 193.0)
-    addEnemy(EK_GOOMBA, 4, 193.0)
-    addEnemy(EK_KOOPA, 5, 538.0)
-    addEnemy(EK_GOOMBA, 6, 538.0)
-    addEnemy(EK_GOOMBA, 6, 538.0)
-    addEnemy(EK_GOOMBA, 7, 538.0)
-    addEnemy(EK_KOOPA, 7, 538.0)
-    addEnemy(EK_KOOPA, 8, 538.0)
-    addEnemy(EK_GOOMBA, 9, 538.0)
-    addEnemy(EK_GOOMBA, 9, 538.0)
-    addEnemy(EK_KOOPA, 10, 538.0)
-    addEnemy(EK_GOOMBA, 10, 538.0)
-
-    addCp(500.0, 0, 1, 0.0, 10.0, 600.0)
-    addCp(1200.0, 0, 2, 0.0, 10.0, 600.0)
-    addCp(2000.0, 0, 3, 0.0, 10.0, 600.0)
-    addCp(2900.0, 0, 4, 0.0, 10.0, 600.0)
-    addCp(3600.0, 0, 5, 0.0, 10.0, 600.0)
-    addCp(4400.0, 0, 6, 0.0, 10.0, 600.0)
-    addCp(5200.0, 0, 7, 0.0, 10.0, 600.0)
-    addCp(5900.0, 0, 8, 0.0, 10.0, 600.0)
-    addCp(6600.0, 0, 9, 0.0, 10.0, 600.0)
-    addCp(7200.0, 0, 10, 0.0, 10.0, 600.0)
-    addEndCheckpoints()
-}
-
-// ==================== 1-4「城堡终章」====================
-
-func buildSolids4() {
-    addGroundShared()
-    addSolid(1600.0, 452.0, 83.0, 82.0)
-    addSolid(3600.0, 409.0, 83.0, 140.0)
-    addSolid(6300.0, 452.0, 83.0, 82.0)
-    addSolid(8103.0, 194.0, 40.0, 360.0)     // 旗杆前高台（参考实现最后一段）
-}
-
-func items4() {
-    addBrick(1400.0, 193.0, CT_NONE)
-    addBrick(1486.0, 193.0, CT_NONE)
-    addBrick(1572.0, 193.0, CT_NONE)
-    addBrick(2700.0, 365.0, CT_NONE)
-    addBrick(2786.0, 365.0, CT_NONE)
-    addBrick(3900.0, 193.0, CT_NONE)
-    addBrick(3986.0, 193.0, CT_SIXCOINS)
-    addBrick(4072.0, 193.0, CT_NONE)
-    addBrick(5100.0, 365.0, CT_NONE)
-    addBrick(5186.0, 365.0, CT_NONE)
-    addBrick(6100.0, 193.0, CT_NONE)
-    addBrick(6186.0, 193.0, CT_STAR)
-    addBrick(6272.0, 193.0, CT_NONE)
-    addBrick(7300.0, 365.0, CT_NONE)
-    addBrick(7386.0, 365.0, CT_NONE)
-
-    addCoinBox(1200.0, 365.0, CT_COIN)
-    addCoinBox(2900.0, 365.0, CT_MUSHROOM)
-    addCoinBox(4100.0, 365.0, CT_COIN)
-    addCoinBox(5300.0, 365.0, CT_COIN)
-    addCoinBox(6500.0, 365.0, CT_MUSHROOM)
-    addCoinBox(7600.0, 365.0, CT_COIN)
-
-    addEnemy(EK_GOOMBA, 1, 538.0)
-    addEnemy(EK_KOOPA, 2, 538.0)
-    addEnemy(EK_GOOMBA, 3, 538.0)
-    addEnemy(EK_GOOMBA, 3, 538.0)
-    addEnemy(EK_KOOPA, 4, 538.0)
-    addEnemy(EK_GOOMBA, 5, 538.0)
-    addEnemy(EK_GOOMBA, 5, 538.0)
-    addEnemy(EK_KOOPA, 6, 538.0)
-    addEnemy(EK_GOOMBA, 7, 538.0)
-    addEnemy(EK_GOOMBA, 7, 538.0)
-    addEnemy(EK_KOOPA, 8, 538.0)
-    addEnemy(EK_GOOMBA, 9, 538.0)
-    addEnemy(EK_GOOMBA, 9, 538.0)
-
-    addCp(600.0, 0, 1, 0.0, 10.0, 600.0)
-    addCp(1400.0, 0, 2, 0.0, 10.0, 600.0)
-    addCp(2400.0, 0, 3, 0.0, 10.0, 600.0)
-    addCp(3300.0, 0, 4, 0.0, 10.0, 600.0)
-    addCp(4300.0, 0, 5, 0.0, 10.0, 600.0)
-    addCp(5000.0, 0, 6, 0.0, 10.0, 600.0)
-    addCp(5700.0, 0, 7, 0.0, 10.0, 600.0)
-    addCp(6800.0, 0, 8, 0.0, 10.0, 600.0)
-    addCp(7500.0, 0, 9, 0.0, 10.0, 600.0)
-    addEndCheckpoints()
-}
+// （关卡数据段已迁到 sm_level.leno、音频段已迁到 sm_audio.leno）
 
 func newGame(): Game {
     Game g = new Game()
@@ -798,1603 +158,9 @@ func newGame(): Game {
     g.time = 400
     g.level_w = LEVEL_WIDTH
     g.viewport_x = 0.0
+    g.K = new Keys()            // 按键状态（原来是个模块级全局 K，拆模块后归 Game）
     g.mario = newMario(110.0)
     return g
-}
-
-func newMario(float x): Mario {
-    Mario m = new Mario()
-    m.x = x
-    m.y = GROUND_HEIGHT - 40.0
-    // ★ 碰撞框宽度取"该姿态最宽的精灵帧"：小马里奥的走动帧是 16px×2.5 = 40，
-    //   若框只有 30（= 站定帧 12px 宽），精灵就会从框的右边挂出去 10px
-    //   ⇒ 顶到水管/砖块时人物"陷"进方块里（参考实现 rect=image.get_rect() 也有这毛病）
-    m.w = 40.0
-    m.h = 40.0
-    m.state = ST_WALK
-    m.frame_index = 0
-    m.facing_right = true
-    m.allow_jump = true
-    m.allow_fireball = true
-    m.max_x_vel = MAX_WALK_SPEED
-    m.max_y_vel = MAX_Y_VEL
-    m.x_accel = WALK_ACCEL
-    m.jump_vel = JUMP_VEL
-    m.gravity = GRAVITY
-    return m
-}
-
-// ==================== 地下金币房（1-1 高水管 ↓ 进入）====================
-// 参考实现（justinarmstrong 那版）没有这个机制，这里是照 NES 原版补的：
-// 站在 1-1 那根高水管顶上按 ↓ → 钻进管子 → 地下金币房（黑底 + 一排金币）→
-// 从房间右侧水管再按 ↓ → 出来时站在 1-1 后面那根水管顶上，大/火状态保留。
-// （相关常量放在文件顶部"常量"区，便于 setupLevel 引用）
-
-func buildCoinRoom() {
-    addSolid(0.0, ROOM_FLOOR_Y, ROOM_W, 60.0)
-    addSolid(ROOM_ENTRY_X, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
-    addSolid(ROOM_EXIT_X, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
-    addSolid(ROOM_WALL_X, 98.0, ROOM_W - ROOM_WALL_X, ROOM_FLOOR_Y - 98.0)
-    G.room_coins = []
-    for 0:7 to i {
-        addRoomCoin(150.0 + _float(i) * 55.0, 460.0)
-    }
-}
-
-func addRoomCoin(float x, float y) {
-    Coin c = new Coin()
-    c.x = x
-    c.y = y
-    c.w = 20.0
-    c.h = 35.0
-    c.y_vel = 0.0
-    c.gravity = 0.0
-    c.active = true
-    c.frame_index = 0
-    c.anim_timer = NOW
-    G.room_coins.add(c)
-}
-
-func roomCoinsUpdate() {
-    Mario m = G.mario
-    for 0:G.room_coins.len() - 1 to i {
-        Coin c = G.room_coins[i]
-        if not c.active { continue }
-        if (NOW - c.anim_timer) > 130.0 {
-            if c.frame_index < 3 { c.frame_index = c.frame_index + 1 } else { c.frame_index = 0 }
-            c.anim_timer = NOW
-        }
-        if ovl(m.x, m.y, m.w, m.h, c.x, c.y, c.w, c.h) {
-            c.active = false
-            G.coins = G.coins + 1
-            addScore(200, c.x - G.viewport_x, c.y - 20.0)
-            if g_audio { sfxCoin.play() }
-        }
-    }
-}
-
-// 站在水管"正上方"并且按 ↓（脚底要压在水管顶上，且人在管子横向范围内）
-func onPipeTop(float pipe_x, float pipe_top, Mario m): bool {
-    if not K.down { return false }
-    float foot = m.y + m.h
-    if foot < pipe_top - 4.0 or foot > pipe_top + 6.0 { return false }
-    if m.x + m.w <= pipe_x + 6.0 or m.x >= pipe_x + ROOM_PIPE_W - 6.0 { return false }
-    return true
-}
-
-func checkPipeEntry() {
-    if G.warp_kind != 0 or G.mario.dead { return }
-    Mario m = G.mario
-    if m.state != ST_STAND { return }
-    if G.in_room {
-        if onPipeTop(ROOM_EXIT_X, ROOM_PIPE_TOP, m) { startPipeWarp(2) }
-    } else {
-        if G.level != 1 { return }
-        if onPipeTop(LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, m) {
-            G.saved_big = m.big
-            G.saved_fire = m.fire
-            startPipeWarp(1)
-        }
-    }
-}
-
-// 传送：借"马里奥过渡态"把关卡冻结（走 updateDuringTransition），动画自己做
-func startPipeWarp(int kind) {
-    G.warp_kind = kind
-    G.warp_t = 56.0
-    Mario m = G.mario
-    m.in_transition = true
-    m.crouching = false
-    m.w = 40.0
-    if m.big { m.h = 80.0 } else { m.h = 40.0 }
-    m.x_vel = 0.0
-    m.y_vel = 0.0
-    m.state = ST_STAND
-    G.level_state = LS_FROZEN
-    if g_audio { sfxPipe.play() }
-}
-
-func warpsUpdate() {
-    if G.warp_kind == 0 { return }
-    Mario m = G.mario
-    G.warp_t = G.warp_t - 1.0
-    // 下沉距离 = 身高 + 6（保证整个身子都进到管口以下，大马里奥也不会露头）
-    if G.warp_t > 26.0 { m.y = m.y + (m.h + 6.0) / WARP_SINK_FRAMES }
-    if G.warp_t <= 0.0 {
-        G.warp_t = 0.0
-        if G.warp_kind == 1 { enterCoinRoom() } else { exitCoinRoom() }
-        G.warp_kind = 0
-    }
-}
-
-func enterCoinRoom() {
-    clearLevelData()
-    buildCoinRoom()
-    G.in_room = true
-    G.level_w = ROOM_W
-    G.viewport_x = 0.0
-    G.banner_timer = 0.0
-    Mario m = G.mario
-    m.x = ROOM_ENTRY_X + (ROOM_PIPE_W - m.w) * 0.5
-    m.y = ROOM_PIPE_TOP - m.h
-    m.x_vel = 0.0
-    m.y_vel = 0.0
-    m.state = ST_STAND
-    m.in_transition = false
-    G.level_state = LS_NOTFROZEN
-}
-
-func exitCoinRoom() {
-    bool wasBig = G.saved_big
-    bool wasFire = G.saved_fire
-    setupLevel(G.level)                 // 重建 1-1（内部会把房间状态清干净）
-    G.in_room = false
-    G.banner_timer = 0.0                // 别又弹一次 "1-1" 横幅
-    Mario m = G.mario
-    m.big = wasBig
-    m.fire = wasFire
-    m.w = 40.0
-    if wasBig { m.h = 80.0 } else { m.h = 40.0 }
-    m.x = LEVEL1_RETURN_PIPE + (ROOM_PIPE_W - m.w) * 0.5
-    m.y = LEVEL1_PIPE_TOP - m.h
-    m.x_vel = 0.0
-    m.y_vel = 0.0
-    m.state = ST_STAND
-    m.crouching = false
-    m.in_transition = false
-    G.viewport_x = LEVEL1_RETURN_PIPE - 300.0
-    if G.viewport_x < 0.0 { G.viewport_x = 0.0 }
-    G.level_state = LS_NOTFROZEN
-}
-
-// ==================== 马里奥帧（mario.py） ====================
-
-// 无敌时用哪套色表
-func tintFrames(Mario m): Array[int] {
-    if m.big {
-        if m.frame_tint == 1 { return M_BIG_G }
-        if m.frame_tint == 2 { return M_BIG_R }
-        if m.frame_tint == 3 { return M_BIG_K }
-        return M_BIG
-    }
-    if m.frame_tint == 1 { return M_SMALL_G }
-    if m.frame_tint == 2 { return M_SMALL_R }
-    if m.frame_tint == 3 { return M_SMALL_K }
-    return M_SMALL
-}
-
-// 当前应画的帧表 + 帧号（返回数组，帧号放 G.frame_tmp）
-var g_frame_idx = 0
-
-func marioFrames(Mario m): Array[int] {
-    g_frame_idx = m.frame_index
-    if m.state == ST_DEATHJUMP {
-        g_frame_idx = 6
-        if m.big { return M_BIG }
-        return M_SMALL
-    }
-    if m.state == ST_SMALLTOBIG {
-        float d = NOW - m.transition_timer
-        if d < 135.0 { g_frame_idx = 0; return M_SMALL }
-        if d < 200.0 { g_frame_idx = 7; return M_SMALL }
-        if d < 365.0 { g_frame_idx = 0; return M_SMALL }
-        if d < 430.0 { g_frame_idx = 7; return M_SMALL }
-        if d < 495.0 { g_frame_idx = 0; return M_SMALL }
-        if d < 560.0 { g_frame_idx = 7; return M_SMALL }
-        if d < 625.0 { g_frame_idx = 0; return M_BIG }
-        if d < 690.0 { g_frame_idx = 0; return M_SMALL }
-        if d < 755.0 { g_frame_idx = 7; return M_SMALL }
-        if d < 820.0 { g_frame_idx = 0; return M_BIG }
-        if d < 885.0 { g_frame_idx = 0; return M_SMALL }
-        g_frame_idx = 0
-        return M_BIG
-    }
-    if m.state == ST_BIGTOFIRE {
-        float d = NOW - m.fire_timer
-        int k = _int(d / 65.0)
-        int pick = k - (k / 4) * 4        // 0..3 循环
-        g_frame_idx = 3
-        if pick == 0 { return M_FIRE }
-        if pick == 1 { return M_BIG_G }
-        if pick == 2 { return M_BIG_R }
-        return M_BIG_K
-    }
-    if m.state == ST_BIGTOSMALL {
-        float d = NOW - m.transition_timer
-        if d < 265.0 { g_frame_idx = 4; return M_BIG }
-        int k = _int((d - 265.0) / 65.0)
-        int pick = k - (k / 2) * 2
-        if pick == 0 { g_frame_idx = 8; return M_BIG }
-        g_frame_idx = 8
-        return M_SMALL
-    }
-    if m.state == ST_FLAGPOLE {
-        float d = NOW - m.flag_timer
-        if d < 65.0 { g_frame_idx = 9 } else { g_frame_idx = 10 }
-        return M_SMALL
-    }
-    if m.state == ST_BOTTOMPOLE {
-        g_frame_idx = 10
-        return M_SMALL
-    }
-    if m.crouching and m.big {
-        g_frame_idx = 7
-        if m.fire { return M_FIRE }      // 火焰马里奥的蹲下帧在 M_FIRE[7]
-        return M_BIG
-    }
-    if m.invincible { return tintFrames(m) }
-    if m.fire { return M_FIRE }
-    if m.big { return M_BIG }
-    return M_SMALL
-}
-
-// 掉血闪烁：把当前帧整体淡化（Python 用 image.set_alpha）
-func marioAlpha(Mario m): float {
-    if m.hurt_invincible {
-        if m.hurt_timer == 0.0 { return 255.0 }
-        float d = NOW - m.hurt_timer
-        if d < 35.0 { return 0.0 }
-        m.hurt_timer = NOW
-        return 255.0
-    }
-    return 255.0
-}
-
-// ==================== 马里奥状态机（mario.py） ====================
-
-func checkAllowJump(Mario m) {
-    if not K.jump { m.allow_jump = true }
-}
-
-func checkAllowFireball(Mario m) {
-    if not K.action { m.allow_fireball = true }
-}
-
-func countFireballs(): int {
-    int n = 0
-    for G.powerups to p { if p.kind == PK_FIREBALL { n = n + 1 } }
-    return n
-}
-
-func shootFireball(Mario m) {
-    if not g_audio { } else { sfxFireball.play() }
-    if (NOW - m.last_fireball) > 200.0 {
-        if countFireballs() < 2 {
-            m.allow_fireball = false
-            Powerup p = new Powerup()
-            p.kind = PK_FIREBALL
-            p.w = 20.0; p.h = 20.0
-            p.x = m.x + m.w
-            p.y = m.y + 10.0
-            if m.facing_right { p.direction = 1; p.x_vel = 12.0 } else { p.direction = 0; p.x_vel = -12.0; p.x = m.x }
-            p.y_vel = 10.0
-            p.gravity = 0.9
-            p.state = PS_FLYING
-            p.frame_index = 0
-            p.active = true
-            G.powerups.add(p)
-            m.last_fireball = NOW
-            m.frame_index = 6
-        }
-    }
-}
-
-func animationSpeed(Mario m): float {
-    if m.x_vel == 0.0 { return 130.0 }
-    if m.x_vel > 0.0 { return 130.0 - (m.x_vel * 13.0) }
-    return 130.0 - (m.x_vel * 13.0 * -1.0)
-}
-
-// 让碰撞框对齐到当前姿态（Python: get_out_of_crouch / adjust_rect / become_*）
-func setPose(Mario m, bool big) {
-    float bottom = m.y + m.h
-    if big { m.w = 40.0; m.h = 80.0 } else { m.w = 40.0; m.h = 40.0 }
-    m.y = bottom - m.h
-}
-
-func getOutOfCrouch(Mario m) {
-    if m.crouching {
-        setPose(m, m.big)
-        m.crouching = false
-    }
-}
-
-// 蹲下姿态：对应参考实现的 check_if_crouching()——帧 7 是 16x22 ⇒ 碰撞框 40x55，
-// 且**脚底不动**（left/bottom 保持），所以精灵贴地、不会浮空。
-func crouchPose(Mario m) {
-    if not m.big { return }
-    float bottom = m.y + m.h
-    m.w = 40.0
-    m.h = 55.0
-    m.y = bottom - m.h
-}
-
-func marioStanding(Mario m) {
-    checkAllowJump(m)
-    checkAllowFireball(m)
-    m.frame_index = 0
-    m.x_vel = 0.0
-    m.y_vel = 0.0
-    if K.action and m.fire and m.allow_fireball { shootFireball(m) }
-    if K.down { m.crouching = true }
-    if K.left {
-        m.facing_right = false
-        getOutOfCrouch(m)
-        m.state = ST_WALK
-    } else if K.right {
-        m.facing_right = true
-        getOutOfCrouch(m)
-        m.state = ST_WALK
-    } else if K.jump {
-        if m.allow_jump {
-            if g_audio { if m.big { sfxBigJump.play() } else { sfxSmallJump.play() } }
-            m.state = ST_JUMP
-            m.y_vel = JUMP_VEL
-        }
-    } else {
-        m.state = ST_STAND
-    }
-    if not K.down { getOutOfCrouch(m) }
-}
-
-func marioWalking(Mario m) {
-    checkAllowJump(m)
-    checkAllowFireball(m)
-    if m.frame_index == 0 {
-        m.frame_index = 1
-        m.walking_timer = NOW
-    } else if (NOW - m.walking_timer) > animationSpeed(m) {
-        if m.frame_index < 3 { m.frame_index = m.frame_index + 1 } else { m.frame_index = 1 }
-        m.walking_timer = NOW
-    }
-    if K.action {
-        m.max_x_vel = RUN_SPEED
-        m.x_accel = RUN_ACCEL
-        if m.fire and m.allow_fireball { shootFireball(m) }
-    } else {
-        m.max_x_vel = MAX_WALK_SPEED
-        m.x_accel = WALK_ACCEL
-    }
-    if K.jump and m.allow_jump {
-        if g_audio { if m.big { sfxBigJump.play() } else { sfxSmallJump.play() } }
-        m.state = ST_JUMP
-        if m.x_vel > 4.5 or m.x_vel < -4.5 { m.y_vel = FAST_JUMP_VEL } else { m.y_vel = JUMP_VEL }
-        m.allow_jump = false
-    }
-    // ★ 走动中按 ↓ 也进蹲下：原版是"滑铲"（保持惯性减速停住），这里同样按"无方向"处理，
-    //   这样 ↓ 在走/站两种状态下都有反应（参考实现只在 standing() 里设 crouching，手感偏迟钝）
-    if K.down {
-        m.crouching = true
-        if m.facing_right {
-            if m.x_vel > 0.0 { m.x_vel = m.x_vel - m.x_accel } else { m.x_vel = 0.0; m.state = ST_STAND }
-        } else {
-            if m.x_vel < 0.0 { m.x_vel = m.x_vel + m.x_accel } else { m.x_vel = 0.0; m.state = ST_STAND }
-        }
-        return
-    }
-    if K.left {
-        getOutOfCrouch(m)
-        m.facing_right = false
-        if m.x_vel > 0.0 { m.frame_index = 5; m.x_accel = SMALL_TURNAROUND } else { m.x_accel = WALK_ACCEL }
-        if m.x_vel > (m.max_x_vel * -1.0) {
-            m.x_vel = m.x_vel - m.x_accel
-            if m.x_vel > -0.5 { m.x_vel = -0.5 }
-        } else if m.x_vel < (m.max_x_vel * -1.0) {
-            m.x_vel = m.x_vel + m.x_accel
-        }
-    } else if K.right {
-        getOutOfCrouch(m)
-        m.facing_right = true
-        if m.x_vel < 0.0 { m.frame_index = 5; m.x_accel = SMALL_TURNAROUND } else { m.x_accel = WALK_ACCEL }
-        if m.x_vel < m.max_x_vel {
-            m.x_vel = m.x_vel + m.x_accel
-            if m.x_vel < 0.5 { m.x_vel = 0.5 }
-        } else if m.x_vel > m.max_x_vel {
-            m.x_vel = m.x_vel - m.x_accel
-        }
-    } else {
-        if m.facing_right {
-            if m.x_vel > 0.0 { m.x_vel = m.x_vel - m.x_accel } else { m.x_vel = 0.0; m.state = ST_STAND }
-        } else {
-            if m.x_vel < 0.0 { m.x_vel = m.x_vel + m.x_accel } else { m.x_vel = 0.0; m.state = ST_STAND }
-        }
-    }
-}
-
-func marioJumping(Mario m) {
-    m.allow_jump = false
-    m.frame_index = 4
-    m.gravity = JUMP_GRAVITY
-    m.y_vel = m.y_vel + m.gravity
-    checkAllowFireball(m)
-    if m.y_vel >= 0.0 and m.y_vel < m.max_y_vel {
-        m.gravity = GRAVITY
-        m.state = ST_FALL
-    }
-    if K.left {
-        if m.x_vel > (m.max_x_vel * -1.0) { m.x_vel = m.x_vel - m.x_accel }
-    } else if K.right {
-        if m.x_vel < m.max_x_vel { m.x_vel = m.x_vel + m.x_accel }
-    }
-    if not K.jump {
-        m.gravity = GRAVITY
-        m.state = ST_FALL
-    }
-    if K.action and m.fire and m.allow_fireball { shootFireball(m) }
-}
-
-func marioFalling(Mario m) {
-    checkAllowFireball(m)
-    if m.y_vel < MAX_Y_VEL { m.y_vel = m.y_vel + m.gravity }
-    if K.left {
-        if m.x_vel > (m.max_x_vel * -1.0) { m.x_vel = m.x_vel - m.x_accel }
-    } else if K.right {
-        if m.x_vel < m.max_x_vel { m.x_vel = m.x_vel + m.x_accel }
-    }
-    if K.action and m.fire and m.allow_fireball { shootFireball(m) }
-}
-
-func marioDeathJump(Mario m) {
-    if m.death_timer == 0.0 {
-        m.death_timer = NOW
-    } else if (NOW - m.death_timer) > 500.0 {
-        m.y = m.y + m.y_vel
-        m.y_vel = m.y_vel + m.gravity
-    }
-}
-
-func becomeBig(Mario m) {
-    m.big = true
-    setPose(m, true)
-    m.frame_index = 0
-}
-
-func becomeSmall(Mario m) {
-    m.big = false
-    m.fire = false
-    setPose(m, false)
-    m.frame_index = 0
-}
-
-func marioToBig(Mario m) {
-    m.in_transition = true
-    if m.transition_timer == 0.0 {
-        m.transition_timer = NOW
-        return
-    }
-    if (NOW - m.transition_timer) < 950.0 { return }
-    m.state = ST_WALK
-    m.in_transition = false
-    m.transition_timer = 0.0
-    becomeBig(m)
-}
-
-func marioToFire(Mario m) {
-    m.in_transition = true
-    if m.fire_timer == 0.0 {
-        m.fire_timer = NOW
-        return
-    }
-    if (NOW - m.fire_timer) < 1040.0 { return }
-    m.fire = true
-    m.state = ST_WALK
-    m.in_transition = false
-    m.fire_timer = 0.0
-}
-
-func marioToSmall(Mario m) {
-    m.in_transition = true
-    m.hurt_invincible = true
-    if m.transition_timer == 0.0 {
-        m.transition_timer = NOW
-        return
-    }
-    if (NOW - m.transition_timer) < 915.0 { return }
-    m.state = ST_WALK
-    m.in_transition = false
-    m.transition_timer = 0.0
-    if m.big { becomeSmall(m) }
-    m.hurt_invincible = true
-    m.hurt_timer2 = NOW
-}
-
-func marioFlagSlide(Mario m) {
-    m.state = ST_FLAGPOLE
-    m.in_transition = true
-    m.x_vel = 0.0
-    m.y_vel = 0.0
-    m.x = m.flag_right - m.w
-    if m.y + m.h >= 493.0 {
-        m.frame_index = 10
-        return
-    }
-    m.y = m.y + 5.0
-}
-
-func marioBottomPole(Mario m) {
-    if m.flag_timer == 0.0 {
-        m.flag_timer = NOW
-        m.facing_right = false
-        return
-    }
-    if (NOW - m.flag_timer) < 210.0 { return }
-    m.in_transition = false
-    if m.y + m.h < 485.0 { m.state = ST_ENDFALL } else { m.state = ST_TOCASTLE }
-}
-
-func setMarioBottomOfPole(Mario m) {
-    m.facing_right = false
-    m.flag_timer = 0.0
-    m.state = ST_BOTTOMPOLE
-}
-
-func marioToCastle(Mario m) {
-    m.max_x_vel = 5.0
-    m.x_accel = WALK_ACCEL
-    if m.x_vel < m.max_x_vel { m.x_vel = m.x_vel + m.x_accel }
-    if m.walking_timer == 0.0 or (NOW - m.walking_timer) > 200.0 {
-        m.walking_timer = NOW
-    } else if (NOW - m.walking_timer) > animationSpeed(m) {
-        if m.frame_index < 3 { m.frame_index = m.frame_index + 1 } else { m.frame_index = 1 }
-        m.walking_timer = NOW
-    }
-}
-
-func marioEndFall(Mario m) {
-    m.y_vel = m.y_vel + GRAVITY
-}
-
-func startDeathJump(Mario m) {
-    playJingle(musDeath)          // 死亡音乐（原来漏了这句，所以死亡没声音）
-    m.dead = true
-    m.y_vel = -11.0
-    m.gravity = 0.5
-    m.frame_index = 6
-    m.state = ST_DEATHJUMP
-    m.in_transition = true
-    G.level_state = LS_FROZEN
-}
-
-// 无敌 / 受伤闪烁 / 蹲下（mario.py check_for_special_state）
-func checkSpecialState(Mario m) {
-    // 蹲下：每帧把碰撞框收到 40x55（脚底不动）——只有大马里奥会变矮
-    if m.crouching and m.big { crouchPose(m) }
-    if m.invincible {
-        float d = NOW - m.inv_start
-        if d < 10000.0 {
-            m.losing_invincibility = false
-            if (NOW - m.inv_timer) > 30.0 {
-                if m.inv_index < 3 { m.inv_index = m.inv_index + 1 } else { m.inv_index = 0 }
-                m.frame_tint = m.inv_index
-                m.inv_timer = NOW
-            }
-            setMusic(0)
-        } else if d < 12000.0 {
-            m.losing_invincibility = true
-            if (NOW - m.inv_timer) > 100.0 {
-                if m.inv_index < 3 { m.inv_index = m.inv_index + 1 } else { m.inv_index = 0 }
-                m.frame_tint = m.inv_index
-                m.inv_timer = NOW
-            }
-        } else {
-            m.losing_invincibility = false
-            m.invincible = false
-            m.frame_tint = 0
-            if g_audio { musInvincible.stop() }
-            if G.time <= 100 { setMusic(2) } else { setMusic(1) }
-        }
-    } else {
-        m.frame_tint = 0
-    }
-    if m.fire and not m.invincible { }
-    if m.hurt_invincible and m.state != ST_BIGTOSMALL {
-        if m.hurt_timer2 == 0.0 {
-            m.hurt_timer2 = NOW
-        } else if (NOW - m.hurt_timer2) > 2000.0 {
-            m.hurt_invincible = false
-            m.hurt_timer = 0.0
-            m.hurt_timer2 = 0.0
-        }
-    }
-}
-
-func marioHandleState(Mario m) {
-    if m.state == ST_STAND { marioStanding(m) }
-    else if m.state == ST_WALK { marioWalking(m) }
-    else if m.state == ST_JUMP { marioJumping(m) }
-    else if m.state == ST_FALL { marioFalling(m) }
-    else if m.state == ST_DEATHJUMP { marioDeathJump(m) }
-    else if m.state == ST_SMALLTOBIG { marioToBig(m) }
-    else if m.state == ST_BIGTOFIRE { marioToFire(m) }
-    else if m.state == ST_BIGTOSMALL { marioToSmall(m) }
-    else if m.state == ST_FLAGPOLE { marioFlagSlide(m) }
-    else if m.state == ST_BOTTOMPOLE { marioBottomPole(m) }
-    else if m.state == ST_TOCASTLE { marioToCastle(m) }
-    else if m.state == ST_ENDFALL { marioEndFall(m) }
-}
-
-func marioUpdate() {
-    if G.warp_kind != 0 { return }          // 钻水管期间由 warpsUpdate 接管
-    Mario m = G.mario
-    marioHandleState(m)
-    checkSpecialState(m)
-}
-
-// ==================== 碰撞查找（spritecollideany） ====================
-
-func findSolid(float x, float y, float w, float h): int {
-    for 0:G.solids.len() - 1 to i {
-        Box b = G.solids[i]
-        if ovl(x, y, w, h, b.x, b.y, b.w, b.h) { return i }
-    }
-    return -1
-}
-
-func findBrick(float x, float y, float w, float h): int {
-    for 0:G.bricks.len() - 1 to i {
-        Brick b = G.bricks[i]
-        if not b.visible { continue }
-        if ovl(x, y, w, h, b.x, b.y, b.w, b.h) { return i }
-    }
-    return -1
-}
-
-func findCoinBox(float x, float y, float w, float h): int {
-    for 0:G.coinboxes.len() - 1 to i {
-        CoinBox c = G.coinboxes[i]
-        if ovl(x, y, w, h, c.x, c.y, c.w, c.h) { return i }
-    }
-    return -1
-}
-
-func findEnemy(float x, float y, float w, float h): int {
-    for 0:G.enemies.len() - 1 to i {
-        Enemy e = G.enemies[i]
-        if not e.active { continue }
-        if ovl(x, y, w, h, e.x, e.y, e.w, e.h) { return i }
-    }
-    return -1
-}
-
-func findShell(float x, float y, float w, float h): int {
-    for 0:G.shells.len() - 1 to i {
-        Enemy e = G.shells[i]
-        if ovl(x, y, w, h, e.x, e.y, e.w, e.h) { return i }
-    }
-    return -1
-}
-
-func findPowerup(float x, float y, float w, float h): int {
-    for 0:G.powerups.len() - 1 to i {
-        Powerup p = G.powerups[i]
-        if not p.active { continue }
-        if ovl(x, y, w, h, p.x, p.y, p.w, p.h) { return i }
-    }
-    return -1
-}
-
-// ==================== 分数 / 飘字 ====================
-
-func addScore(int v, float x, float y) {
-    G.score = G.score + v
-    ScorePop s = new ScorePop()
-    s.x = x
-    s.y = y
-    s.text = _str(v)
-    s.active = true
-    G.pops.add(s)
-}
-
-func addScoreOneUp(float x, float y) {
-    G.lives = G.lives + 1
-    ScorePop s = new ScorePop()
-    s.x = x; s.y = y
-    s.text = "1UP"
-    s.active = true
-    G.pops.add(s)
-}
-
-// ==================== 砖块 / 金币箱 ====================
-
-func spawnCoinFromBox(float cx, float y) {
-    Coin c = new Coin()
-    c.x = cx - 10.0
-    c.y = y - 5.0 - 35.0
-    c.initial_height = c.y + 35.0 - 5.0
-    c.y_vel = -15.0
-    c.frame_index = 0
-    c.active = true
-    G.coins_arr.add(c)
-}
-
-// 道具出场（coin_box.py bumped / bricks.py opened）
-func spawnPowerup(int kind, float cx, float y) {
-    Powerup p = new Powerup()
-    p.kind = kind
-    p.w = 40.0
-    p.h = 40.0
-    p.x = cx - 20.0
-    p.y = y
-    p.state = PS_REVEAL
-    p.y_vel = -1.0
-    p.x_vel = 0.0
-    p.direction = 1
-    p.gravity = 1.0
-    p.max_y_vel = 8.0
-    p.box_height = y
-    p.frame_index = 0
-    if kind == PK_STAR { p.gravity = 0.4 }
-    p.active = true
-    G.powerups.add(p)
-}
-
-func spawnPieces(float bx, float by) {
-    for 0:3 to i {
-        Piece p = new Piece()
-        if i == 0 { p.x = bx; p.y = by - 20.0; p.x_vel = -2.0; p.y_vel = -12.0; p.flip = false }
-        else if i == 1 { p.x = bx + 43.0; p.y = by - 20.0; p.x_vel = 2.0; p.y_vel = -12.0; p.flip = true }
-        else if i == 2 { p.x = bx; p.y = by; p.x_vel = -2.0; p.y_vel = -6.0; p.flip = false }
-        else { p.x = bx + 43.0; p.y = by; p.x_vel = 2.0; p.y_vel = -6.0; p.flip = true }
-        p.active = true
-        G.pieces.add(p)
-    }
-}
-
-// 顶砖块时把砖上的敌人踢死（level1.py check_if_enemy_on_brick）
-func checkEnemyOnBrick(Brick br) {
-    int ei = findEnemy(br.x, br.y - 5.0, br.w, br.h)
-    if ei >= 0 {
-        Enemy e = G.enemies[ei]
-        if g_audio { sfxKick.play() }
-        addScore(100, e.x - G.viewport_x, e.y)
-        e.state = ES_DEATHJUMP
-        e.y_vel = -8.0
-        e.gravity = 0.5
-        e.frame_index = 3
-        if G.mario.x + G.mario.w * 0.5 > br.x + br.w * 0.5 { e.x_vel = 2.0 } else { e.x_vel = -2.0 }
-        G.dying.add(e)
-        e.active = false
-    }
-}
-
-func brickStartBump(Brick b) {
-    b.y_vel = -6.0
-    b.state = BS_BUMPED
-    if b.contents == CT_SIXCOINS {
-        if g_audio { sfxCoin.play() }
-        if b.coin_total > 0 {
-            spawnCoinFromBox(b.x + b.w * 0.5, b.y)
-            b.coin_total = b.coin_total - 1
-            if b.coin_total == 0 { b.frame_index = 1 }
-        }
-    } else if b.contents == CT_STAR {
-        if g_audio { sfxPowerupApp.play() }
-        b.frame_index = 1
-    }
-}
-
-func bricksUpdate() {
-    for 0:G.bricks.len() - 1 to i {
-        Brick b = G.bricks[i]
-        if b.state == BS_BUMPED {
-            b.y = b.y + b.y_vel
-            b.y_vel = b.y_vel + b.gravity
-            if b.y >= (b.rest_y + 5.0) {
-                b.y = b.rest_y
-                if b.contents == CT_STAR { b.state = BS_OPENED } 
-                else if b.contents == CT_SIXCOINS { if b.coin_total == 0 { b.state = BS_OPENED } else { b.state = BS_RESTING } } 
-                else { b.state = BS_RESTING }
-            }
-        } else if b.state == BS_OPENED {
-            b.frame_index = 1
-            if b.contents == CT_STAR and b.powerup_in_box {
-                spawnPowerup(PK_STAR, b.x + b.w * 0.5, b.rest_y)
-                b.powerup_in_box = false
-            }
-        }
-    }
-}
-
-func coinBoxStartBump(CoinBox c) {
-    c.y_vel = -6.0
-    c.state = BS_BUMPED
-    if c.contents == CT_COIN {
-        spawnCoinFromBox(c.x + c.w * 0.5, c.y)
-        if g_audio { sfxCoin.play() }
-    } else {
-        if g_audio { sfxPowerupApp.play() }
-    }
-}
-
-func coinboxesUpdate() {
-    for 0:G.coinboxes.len() - 1 to i {
-        CoinBox c = G.coinboxes[i]
-        if c.state == BS_BUMPED {
-            c.y = c.y + c.y_vel
-            c.y_vel = c.y_vel + c.gravity
-            c.frame_index = 3
-            if c.y > (c.rest_y + 5.0) {
-                c.y = c.rest_y
-                c.state = BS_OPENED
-                if c.contents == CT_MUSHROOM { spawnPowerup(PK_MUSHROOM, c.x + c.w * 0.5, c.y) }
-                else if c.contents == CT_FIREFLOWER { spawnPowerup(PK_FIREFLOWER, c.x + c.w * 0.5, c.y) }
-                else if c.contents == CT_LIFE { spawnPowerup(PK_LIFE, c.x + c.w * 0.5, c.y) }
-            }
-        } else if c.state == BS_RESTING {
-            c.anim_timer = c.anim_timer + 16.0
-            if c.first_half {
-                if c.frame_index == 0 {
-                    if c.anim_timer > 375.0 { c.frame_index = 1; c.anim_timer = 0.0 }
-                } else if c.frame_index < 2 {
-                    if c.anim_timer > 125.0 { c.frame_index = c.frame_index + 1; c.anim_timer = 0.0 }
-                } else if c.frame_index == 2 {
-                    if c.anim_timer > 125.0 { c.frame_index = 1; c.first_half = false; c.anim_timer = 0.0 }
-                }
-            } else {
-                if c.frame_index == 1 {
-                    if c.anim_timer > 125.0 { c.frame_index = 0; c.first_half = true; c.anim_timer = 0.0 }
-                }
-            }
-        }
-    }
-}
-
-// ==================== 道具 / 金币 / 碎片 ====================
-
-func powerupsUpdate() {
-    for 0:G.powerups.len() - 1 to i {
-        Powerup p = G.powerups[i]
-        if not p.active { continue }
-        if p.kind == PK_FIREBALL {
-            if p.state == PS_EXPLODING {
-                if (NOW - p.anim_timer) > 50.0 {
-                    if p.frame_index < 6 { p.frame_index = p.frame_index + 1; p.anim_timer = NOW } else { p.active = false }
-                }
-            } else if (NOW - p.anim_timer) > 200.0 {
-                if p.frame_index < 3 { p.frame_index = p.frame_index + 1 } else { p.frame_index = 0 }
-                p.anim_timer = NOW
-            }
-        } else if p.kind == PK_STAR {
-            if p.state == PS_REVEAL {
-                p.y = p.y + p.y_vel
-                if p.y + p.h <= p.box_height {
-                    p.y = p.box_height - p.h
-                    p.y_vel = -2.0
-                    p.state = PS_BOUNCE
-                }
-            } else {
-                if p.direction == 0 { p.x_vel = -5.0 } else { p.x_vel = 5.0 }
-            }
-            if (NOW - p.anim_timer) > 30.0 {
-                if p.frame_index < 3 { p.frame_index = p.frame_index + 1 } else { p.frame_index = 0 }
-                p.anim_timer = NOW
-            }
-        } else if p.kind == PK_FIREFLOWER {
-            if p.state == PS_REVEAL {
-                p.y = p.y + p.y_vel
-                if p.y + p.h <= p.box_height { p.y = p.box_height - p.h; p.state = PS_RESTING }
-            }
-            if (NOW - p.anim_timer) > 30.0 {
-                if p.frame_index < 3 { p.frame_index = p.frame_index + 1 } else { p.frame_index = 0 }
-                p.anim_timer = NOW
-            }
-        } else {
-            if p.state == PS_REVEAL {
-                p.y = p.y + p.y_vel
-                if p.y + p.h <= p.box_height { p.y = p.box_height - p.h; p.y_vel = 0.0; p.state = PS_SLIDE }
-            } else if p.state == PS_SLIDE {
-                if p.direction == 1 { p.x_vel = 3.0 } else { p.x_vel = -3.0 }
-            } else if p.state == PS_FALL {
-                if p.y_vel < p.max_y_vel { p.y_vel = p.y_vel + p.gravity }
-            }
-        }
-    }
-}
-
-func coinsUpdate() {
-    for 0:G.coins_arr.len() - 1 to i {
-        Coin c = G.coins_arr[i]
-        if not c.active { continue }
-        c.y = c.y + c.y_vel
-        c.y_vel = c.y_vel + c.gravity
-        if (NOW - c.anim_timer) > 80.0 {
-            if c.frame_index < 3 { c.frame_index = c.frame_index + 1 } else { c.frame_index = 0 }
-            c.anim_timer = NOW
-        }
-        if c.y + c.h > c.initial_height {
-            c.active = false
-            addScore(200, c.x - G.viewport_x, c.y)
-        }
-    }
-}
-
-func piecesUpdate() {
-    for 0:G.pieces.len() - 1 to i {
-        Piece p = G.pieces[i]
-        if not p.active { continue }
-        p.x = p.x + p.x_vel
-        p.y = p.y + p.y_vel
-        p.y_vel = p.y_vel + p.gravity
-        if p.y > SH + 50.0 { p.active = false }
-    }
-}
-
-func popsUpdate() {
-    for 0:G.pops.len() - 1 to i {
-        ScorePop s = G.pops[i]
-        if not s.active { continue }
-        s.y = s.y + s.vy
-        if (NOW - s.timer) > 300.0 { s.vy = 0.0 }
-        if (NOW - s.timer) > 900.0 { s.active = false }
-    }
-}
-
-func cleanDead() {
-    Array[Enemy] ke = []
-    for 0:G.enemies.len() - 1 to i { Enemy e = G.enemies[i]; if e.active or not e.released { ke.add(e) } }
-    G.enemies = ke
-    Array[Enemy] ks = []
-    for 0:G.shells.len() - 1 to i { Enemy e = G.shells[i]; if e.active { ks.add(e) } }
-    G.shells = ks
-    Array[Enemy] kd = []
-    for 0:G.dying.len() - 1 to i { Enemy e = G.dying[i]; if e.active { kd.add(e) } }
-    G.dying = kd
-    Array[Powerup] kp = []
-    for 0:G.powerups.len() - 1 to i { Powerup p = G.powerups[i]; if p.active { kp.add(p) } }
-    G.powerups = kp
-    Array[Coin] kc = []
-    for 0:G.coins_arr.len() - 1 to i { Coin c = G.coins_arr[i]; if c.active { kc.add(c) } }
-    G.coins_arr = kc
-    Array[Piece] kb = []
-    for 0:G.pieces.len() - 1 to i { Piece p = G.pieces[i]; if p.active { kb.add(p) } }
-    G.pieces = kb
-    Array[ScorePop] kpo = []
-    for 0:G.pops.len() - 1 to i { ScorePop s = G.pops[i]; if s.active { kpo.add(s) } }
-    G.pops = kpo
-}
-
-// ==================== 马里奥碰撞（level1.py） ====================
-
-func resolveXItem(float cx, float cw) {
-    Mario m = G.mario
-    if m.x < cx { m.x = cx - m.w } else { m.x = cx + cw }
-    m.x_vel = 0.0
-}
-
-func hurtMario() {
-    Mario m = G.mario
-    if m.invincible { return }
-    if m.big {
-        if g_audio { sfxPipe.play() }
-        m.fire = false
-        m.y_vel = -1.0
-        m.state = ST_BIGTOSMALL
-        m.in_transition = true
-        m.transition_timer = 0.0
-        convertFireflowersToMushrooms()
-    } else {
-        startDeathJump(m)
-    }
-}
-
-func convertMushroomsToFireflowers() {
-    for 0:G.bricks.len() - 1 to i { if G.bricks[i].contents == CT_MUSHROOM { G.bricks[i].contents = CT_FIREFLOWER } }
-    for 0:G.coinboxes.len() - 1 to i { if G.coinboxes[i].contents == CT_MUSHROOM { G.coinboxes[i].contents = CT_FIREFLOWER } }
-}
-
-func convertFireflowersToMushrooms() {
-    for 0:G.bricks.len() - 1 to i { if G.bricks[i].contents == CT_FIREFLOWER { G.bricks[i].contents = CT_MUSHROOM } }
-    for 0:G.coinboxes.len() - 1 to i { if G.coinboxes[i].contents == CT_FIREFLOWER { G.coinboxes[i].contents = CT_MUSHROOM } }
-}
-
-func pickPowerupX(Powerup p) {
-    Mario m = G.mario
-    if p.kind == PK_STAR {
-        addScore(1000, m.x + m.w * 0.5 - G.viewport_x, m.y)
-        m.invincible = true
-        m.inv_start = NOW
-        m.inv_timer = NOW
-        setMusic(0)
-        if g_audio { musInvincible.play() }
-    } else if p.kind == PK_MUSHROOM {
-        if g_audio { sfxPowerup.play() }
-        addScore(1000, m.x + m.w * 0.5 - G.viewport_x, m.y - 20.0)
-        m.y_vel = -1.0
-        m.state = ST_SMALLTOBIG
-        m.in_transition = true
-        m.transition_timer = 0.0
-        convertMushroomsToFireflowers()
-    } else if p.kind == PK_LIFE {
-        addScoreOneUp(p.x + p.w - G.viewport_x, p.y)
-        if g_audio { sfxOneUp.play() }
-    } else if p.kind == PK_FIREFLOWER {
-        if g_audio { sfxPowerup.play() }
-        addScore(1000, m.x + m.w * 0.5 - G.viewport_x, m.y)
-        if m.big and not m.fire {
-            m.state = ST_BIGTOFIRE
-            m.in_transition = true
-            m.fire_timer = 0.0
-        } else if not m.big {
-            m.state = ST_SMALLTOBIG
-            m.in_transition = true
-            m.transition_timer = 0.0
-            convertMushroomsToFireflowers()
-        }
-    }
-    if p.kind != PK_FIREBALL { p.active = false }
-}
-
-func marioXCollide() {
-    Mario m = G.mario
-    int cbi = findCoinBox(m.x, m.y, m.w, m.h)
-    int bri = findBrick(m.x, m.y, m.w, m.h)
-    int coli = findSolid(m.x, m.y, m.w, m.h)
-    int ei = findEnemy(m.x, m.y, m.w, m.h)
-    int si = findShell(m.x, m.y, m.w, m.h)
-    int pi = findPowerup(m.x, m.y, m.w, m.h)
-
-    if cbi >= 0 {
-        CoinBox c = G.coinboxes[cbi]
-        resolveXItem(c.x, c.w)
-    } else if bri >= 0 {
-        Brick b = G.bricks[bri]
-        resolveXItem(b.x, b.w)
-    } else if coli >= 0 {
-        Box b = G.solids[coli]
-        resolveXItem(b.x, b.w)
-    } else if ei >= 0 {
-        Enemy e = G.enemies[ei]
-        if m.invincible {
-            if g_audio { sfxKick.play() }
-            addScore(100, m.x + m.w - G.viewport_x, m.y)
-            e.state = ES_DEATHJUMP
-            e.y_vel = -8.0; e.gravity = 0.5; e.frame_index = 3; e.x_vel = 2.0
-            G.dying.add(e)
-            e.active = false
-        } else if m.hurt_invincible {
-            // 受伤无敌期间穿过敌人
-        } else {
-            hurtMario()
-        }
-    } else if si >= 0 {
-        Enemy s = G.shells[si]
-        if s.state == ES_JUMPEDON {
-            if m.x < s.x {
-                addScore(400, s.x + s.w * 0.5 - G.viewport_x, s.y)
-                m.x = s.x - m.w
-                s.direction = 1
-                s.x_vel = 5.0
-                s.x = s.x + 5.0
-            } else {
-                m.x = s.x + s.w
-                s.direction = 0
-                s.x_vel = -5.0
-                s.x = s.x - 5.0
-            }
-            s.state = ES_SHELLSLIDE
-        } else if s.state == ES_SHELLSLIDE {
-            if m.big and not m.invincible {
-                hurtMario()
-            } else if m.invincible {
-                addScore(200, s.x + s.w - G.viewport_x, s.y)
-                s.state = ES_DEATHJUMP
-                s.y_vel = -8.0; s.gravity = 0.5; s.x_vel = 2.0
-                G.dying.add(s)
-                s.active = false
-            } else if not m.hurt_invincible {
-                startDeathJump(m)
-            }
-        }
-    } else if pi >= 0 {
-        Powerup p = G.powerups[pi]
-        pickPowerupX(p)
-    }
-}
-
-func marioYCollide() {
-    Mario m = G.mario
-    int coli = findSolid(m.x, m.y, m.w, m.h)
-    int ei = findEnemy(m.x, m.y, m.w, m.h)
-    int si = findShell(m.x, m.y, m.w, m.h)
-    int bri = findBrick(m.x, m.y, m.w, m.h)
-    int cbi = findCoinBox(m.x, m.y, m.w, m.h)
-    int pi = findPowerup(m.x, m.y, m.w, m.h)
-
-    // prevent_collision_conflict：砖块与金币箱只认离马里奥中心更近的那个
-    if bri >= 0 and cbi >= 0 {
-        Brick b = G.bricks[bri]
-        CoinBox c = G.coinboxes[cbi]
-        float d1 = m.x + m.w * 0.5 - (b.x + b.w * 0.5)
-        if d1 < 0.0 { d1 = 0.0 - d1 }
-        float d2 = m.x + m.w * 0.5 - (c.x + c.w * 0.5)
-        if d2 < 0.0 { d2 = 0.0 - d2 }
-        if d1 < d2 { cbi = -1 } else { bri = -1 }
-    }
-
-    if cbi >= 0 {
-        CoinBox c = G.coinboxes[cbi]
-        if m.y > c.y {
-            if c.state == BS_RESTING {
-                if c.contents == CT_COIN {
-                    addScore(200, c.x + c.w * 0.5 - G.viewport_x, c.y - 40.0)
-                    G.coins = G.coins + 1
-                    coinBoxStartBump(c)
-                } else {
-                    coinBoxStartBump(c)
-                }
-            }
-            if g_audio { sfxBump.play() }
-            m.y_vel = 7.0
-            m.y = c.y + c.h
-            m.state = ST_FALL
-        } else {
-            m.y_vel = 0.0
-            m.y = c.y - m.h
-            m.state = ST_WALK
-        }
-    } else if bri >= 0 {
-        Brick b = G.bricks[bri]
-        if m.y > b.y {
-            if b.state == BS_RESTING {
-                if m.big and b.contents == CT_NONE {
-                    if g_audio { sfxBrickSmash.play() }
-                    checkEnemyOnBrick(b)
-                    spawnPieces(b.x, b.y)
-                    b.visible = false
-                } else {
-                    if g_audio { sfxBump.play() }
-                    if b.coin_total > 0 {
-                        G.coins = G.coins + 1
-                        addScore(200, b.x + b.w * 0.5 - G.viewport_x, b.y - 40.0)
-                    }
-                    checkEnemyOnBrick(b)
-                    brickStartBump(b)
-                }
-            } else if b.state == BS_OPENED {
-                if g_audio { sfxBump.play() }
-            }
-            m.y_vel = 7.0
-            m.y = b.y + b.h
-            m.state = ST_FALL
-        } else {
-            m.y_vel = 0.0
-            m.y = b.y - m.h
-            m.state = ST_WALK
-        }
-    } else if coli >= 0 {
-        Box c = G.solids[coli]
-        if c.y + c.h > m.y + m.h {
-            m.y_vel = 0.0
-            m.y = c.y - m.h
-            if m.state == ST_ENDFALL { m.state = ST_TOCASTLE } else { m.state = ST_WALK }
-        } else if c.y < m.y {
-            m.y_vel = 7.0
-            m.y = c.y + c.h
-            m.state = ST_FALL
-        }
-    } else if ei >= 0 {
-        Enemy e = G.enemies[ei]
-        if m.invincible {
-            if g_audio { sfxKick.play() }
-            e.state = ES_DEATHJUMP
-            e.y_vel = -8.0; e.gravity = 0.5; e.frame_index = 3; e.x_vel = 2.0
-            G.dying.add(e)
-            e.active = false
-        } else if m.y_vel > 0.0 {
-            if g_audio { sfxStomp.play() }
-            addScore(100, e.x + e.w * 0.5 - G.viewport_x, e.y)
-            e.state = ES_JUMPEDON
-            if e.kind == EK_GOOMBA {
-                e.frame_index = 2
-                e.death_timer = NOW
-                G.dying.add(e)
-                e.active = false
-            } else {
-                // 乌龟 → 变成壳
-                float sb = e.y + e.h
-                e.w = 40.0
-                e.h = 37.0
-                e.y = sb - e.h
-                e.x_vel = 0.0
-                e.state = ES_JUMPEDON
-                G.shells.add(e)
-                e.in_shell = true
-                e.active = false          // 从敌人表里摘掉，只作为"壳"存在
-            }
-            m.y = e.y - m.h
-            m.state = ST_JUMP
-            m.y_vel = -7.0
-        }
-    } else if si >= 0 {
-        Enemy s = G.shells[si]
-        if m.y_vel > 0.0 {
-            addScore(400, m.x + m.w * 0.5 - G.viewport_x, m.y)
-            if s.state == ES_JUMPEDON {
-                if g_audio { sfxKick.play() }
-                s.state = ES_SHELLSLIDE
-                if m.x + m.w * 0.5 < s.x + s.w * 0.5 { s.direction = 1; s.x = m.x + m.w + 5.0 } 
-                else { s.direction = 0; s.x = m.x - s.w - 5.0 }
-            } else {
-                s.state = ES_JUMPEDON
-                s.x_vel = 0.0
-            }
-        }
-    } else if pi >= 0 {
-        Powerup p = G.powerups[pi]
-        if p.kind == PK_STAR {
-            if g_audio { sfxPowerup.play() }
-            p.active = false
-            m.invincible = true
-            m.inv_start = NOW
-            m.inv_timer = NOW
-            setMusic(0)
-            if g_audio { musInvincible.play() }
-        }
-    }
-    testIfMarioIsFalling()
-}
-
-func testIfMarioIsFalling() {
-    Mario m = G.mario
-    m.y = m.y + 1.0
-    int a = findSolid(m.x, m.y, m.w, m.h)
-    int b = findBrick(m.x, m.y, m.w, m.h)
-    int c = findCoinBox(m.x, m.y, m.w, m.h)
-    if a < 0 and b < 0 and c < 0 {
-        if m.state == ST_TOCASTLE or m.state == ST_ENDFALL {
-            m.state = ST_ENDFALL
-        } else if m.state != ST_JUMP and m.state != ST_DEATHJUMP and m.state != ST_SMALLTOBIG
-            and m.state != ST_BIGTOFIRE and m.state != ST_BIGTOSMALL and m.state != ST_FLAGPOLE {
-            m.state = ST_FALL
-        }
-    }
-    m.y = m.y - 1.0
-}
-
-func adjustMarioPosition() {
-    if G.warp_kind != 0 { return }      // 钻管子期间不允许任何人推动马里奥（否则会被水管挤到旁边 ✗）
-    Mario m = G.mario
-    m.x = m.x + _float(_int(0.5 + m.x_vel))
-    marioXCollide()
-    if not m.in_transition {
-        m.y = m.y + _float(_int(0.5 + m.y_vel))
-        marioYCollide()
-    }
-    if m.x < (G.viewport_x + 5.0) { m.x = G.viewport_x + 5.0 }
-}
-
-// ==================== 敌人（enemies.py） ====================
-
-func enemyAnimation(Enemy e) {
-    if e.state == ES_WALK {
-        if (NOW - e.anim_timer) > 125.0 {
-            if e.frame_index == 0 { e.frame_index = 1 } else if e.frame_index == 1 { e.frame_index = 0 }
-            e.anim_timer = NOW
-        }
-    } else if e.state == ES_JUMPEDON {
-        e.frame_index = 2
-    } else if e.state == ES_SHELLSLIDE {
-        e.frame_index = 2
-    }
-}
-
-func enemyDeleteIfOffScreen(Enemy e) {
-    if e.x < (G.viewport_x - 300.0) { e.active = false }
-    else if e.y > SH { e.active = false }
-    else if e.state == ES_SHELLSLIDE and e.x > (G.viewport_x + SW + 500.0) { e.active = false }
-}
-
-func enemyCheckX(Enemy e, int self_index) {
-    int ci = findSolid(e.x, e.y, e.w, e.h)
-    if ci >= 0 {
-        Box c = G.solids[ci]
-        if e.direction == 1 { e.x = c.x - e.w; e.direction = 0; e.x_vel = -2.0 } 
-        else { e.x = c.x + c.w; e.direction = 1; e.x_vel = 2.0 }
-        return
-    }
-    // 敌人互撞
-    for 0:G.enemies.len() - 1 to i {
-        if i == self_index { continue }
-        Enemy o = G.enemies[i]
-        if not o.active { continue }
-        if ovl(e.x, e.y, e.w, e.h, o.x, o.y, o.w, o.h) {
-            if e.direction == 1 {
-                e.x = o.x - e.w; e.direction = 0; e.x_vel = -2.0
-                o.direction = 1; o.x_vel = 2.0
-            } else {
-                e.x = o.x + o.w; e.direction = 1; e.x_vel = 2.0
-                o.direction = 0; o.x_vel = -2.0
-            }
-            return
-        }
-    }
-}
-
-func enemyCheckY(Enemy e) {
-    int ci = findSolid(e.x, e.y, e.w, e.h)
-    int bi = findBrick(e.x, e.y, e.w, e.h)
-    int cbi = findCoinBox(e.x, e.y, e.w, e.h)
-    if ci >= 0 {
-        Box c = G.solids[ci]
-        if e.y + e.h > c.y + c.h {
-            e.y_vel = 7.0
-            e.y = c.y + c.h
-            e.state = ES_FALL
-        } else if e.y + e.h < c.y + c.h {
-            e.y_vel = 0.0
-            e.y = c.y - e.h
-            e.state = ES_WALK
-        }
-    } else if bi >= 0 {
-        Brick b = G.bricks[bi]
-        if b.state == BS_BUMPED {
-            enemyKickByBlock(e, b.x + b.w * 0.5)
-        } else if e.x > b.x {
-            e.y_vel = 7.0
-            e.y = b.y + b.h
-            e.state = ES_FALL
-        } else {
-            e.y_vel = 0.0
-            e.y = b.y - e.h
-            e.state = ES_WALK
-        }
-    } else if cbi >= 0 {
-        CoinBox c = G.coinboxes[cbi]
-        if c.state == BS_BUMPED {
-            addScore(100, e.x + e.w * 0.5 - G.viewport_x, e.y)
-            enemyKickByBlock(e, c.x + c.w * 0.5)
-        } else if e.x > c.x {
-            e.y_vel = 7.0
-            e.y = c.y + c.h
-            e.state = ES_FALL
-        } else {
-            e.y_vel = 0.0
-            e.y = c.y - e.h
-            e.state = ES_WALK
-        }
-    } else {
-        e.y = e.y + 1.0
-        int a = findSolid(e.x, e.y, e.w, e.h)
-        int b = findBrick(e.x, e.y, e.w, e.h)
-        int c = findCoinBox(e.x, e.y, e.w, e.h)
-        if a < 0 and b < 0 and c < 0 {
-            e.state = ES_FALL
-        }
-        e.y = e.y - 1.0
-    }
-}
-
-func enemyKickByBlock(Enemy e, float block_cx) {
-    if g_audio { sfxKick.play() }
-    e.state = ES_DEATHJUMP
-    e.y_vel = -8.0
-    e.gravity = 0.5
-    e.frame_index = 3
-    if G.mario.x + G.mario.w * 0.5 > block_cx { e.x_vel = 2.0 } else { e.x_vel = -2.0 }
-    G.dying.add(e)
-    e.active = false
-}
-
-func adjustEnemyPosition() {
-    for 0:G.enemies.len() - 1 to i {
-        Enemy e = G.enemies[i]
-        if not e.active { continue }
-        if e.state == ES_DEATHJUMP {
-            e.y = e.y + e.y_vel
-            e.x = e.x + e.x_vel
-            e.y_vel = e.y_vel + e.gravity
-            if e.y > SH + 60.0 { e.active = false }
-            continue
-        }
-        if e.state == ES_JUMPEDON and e.kind == EK_GOOMBA {
-            if (NOW - e.death_timer) > 500.0 { e.active = false }
-            continue
-        }
-        if e.state == ES_SHELLSLIDE {
-            if e.direction == 1 { e.x_vel = 10.0 } else { e.x_vel = -10.0 }
-        } else if e.state == ES_FALL {
-            if e.y_vel < 10.0 { e.y_vel = e.y_vel + e.gravity }
-        }
-        e.x = e.x + e.x_vel
-        enemyCheckX(e, i)
-        e.y = e.y + e.y_vel
-        enemyCheckY(e)
-        enemyDeleteIfOffScreen(e)
-    }
-}
-
-// 龟壳：位置与碰撞（level1.py adjust_shell_position）
-func adjustShellPosition() {
-    for 0:G.shells.len() - 1 to i {
-        Enemy s = G.shells[i]
-        if not s.active { continue }
-        if s.state == ES_DEATHJUMP {
-            s.y = s.y + s.y_vel
-            s.x = s.x + s.x_vel
-            s.y_vel = s.y_vel + s.gravity
-            if s.y > SH + 60.0 { s.active = false }
-            continue
-        }
-        s.x = s.x + s.x_vel
-        // 壳撞地形：弹回
-        int ci = findSolid(s.x, s.y, s.w, s.h)
-        if ci >= 0 {
-            Box c = G.solids[ci]
-            if g_audio { sfxBump.play() }
-            if s.x_vel > 0.0 { s.direction = 0; s.x = c.x - s.w } else { s.direction = 1; s.x = c.x + c.w }
-        }
-        // 壳撞敌人：撞死
-        int ei = findEnemy(s.x, s.y, s.w, s.h)
-        if ei >= 0 {
-            Enemy e = G.enemies[ei]
-            if g_audio { sfxKick.play() }
-            addScore(100, e.x + e.w - G.viewport_x, e.y)
-            enemyKickByBlock(e, s.x + s.w * 0.5)
-        }
-        s.y = s.y + s.y_vel
-        int cj = findSolid(s.x, s.y, s.w, s.h)
-        if cj >= 0 {
-            Box c = G.solids[cj]
-            s.y_vel = 0.0
-            s.y = c.y - s.h
-            s.state = ES_SHELLSLIDE
-        } else {
-            s.y = s.y + 1.0
-            if findSolid(s.x, s.y, s.w, s.h) < 0 { s.state = ES_FALL }
-            s.y = s.y - 1.0
-        }
-        enemyDeleteIfOffScreen(s)
-    }
-}
-
-// ==================== 道具位置与碰撞（level1.py） ====================
-
-func powerupCheckX(Powerup p) {
-    int ci = findSolid(p.x, p.y, p.w, p.h)
-    int bi = findBrick(p.x, p.y, p.w, p.h)
-    int cbi = findCoinBox(p.x, p.y, p.w, p.h)
-    if ci >= 0 {
-        Box c = G.solids[ci]
-        if p.x < c.x { p.x = c.x - p.w; p.direction = 0 } else { p.x = c.x + c.w; p.direction = 1 }
-    } else if bi >= 0 {
-        Brick b = G.bricks[bi]
-        if p.x < b.x { p.x = b.x - p.w; p.direction = 0 } else { p.x = b.x + b.w; p.direction = 1 }
-    } else if cbi >= 0 {
-        CoinBox c = G.coinboxes[cbi]
-        if p.x < c.x { p.x = c.x - p.w; p.direction = 0 } else { p.x = c.x + c.w; p.direction = 1 }
-    }
-}
-
-func powerupCheckY(Powerup p) {
-    int ci = findSolid(p.x, p.y, p.w, p.h)
-    int bi = findBrick(p.x, p.y, p.w, p.h)
-    int cbi = findCoinBox(p.x, p.y, p.w, p.h)
-    if ci >= 0 {
-        Box c = G.solids[ci]
-        p.y = c.y - p.h
-        p.state = PS_SLIDE
-        p.y_vel = 0.0
-    } else if bi >= 0 {
-        Brick b = G.bricks[bi]
-        p.y = b.y - p.h
-        p.state = PS_SLIDE
-        p.y_vel = 0.0
-    } else if cbi >= 0 {
-        CoinBox c = G.coinboxes[cbi]
-        p.y = c.y - p.h
-        p.state = PS_SLIDE
-        p.y_vel = 0.0
-    } else {
-        p.y = p.y + 1.0
-        int a = findSolid(p.x, p.y, p.w, p.h)
-        int b = findBrick(p.x, p.y, p.w, p.h)
-        int c = findCoinBox(p.x, p.y, p.w, p.h)
-        if a < 0 and b < 0 and c < 0 { p.state = PS_FALL }
-        p.y = p.y - 1.0
-    }
-}
-
-func starCheckY(Powerup p) {
-    int ci = findSolid(p.x, p.y, p.w, p.h)
-    int bi = findBrick(p.x, p.y, p.w, p.h)
-    int cbi = findCoinBox(p.x, p.y, p.w, p.h)
-    if ci >= 0 {
-        Box c = G.solids[ci]
-        if p.y > c.y { p.y = c.y + c.h; p.y_vel = 0.0 } else { p.y = c.y - p.h; p.y_vel = -8.0 }
-    } else if bi >= 0 {
-        Brick b = G.bricks[bi]
-        if p.y > b.y { p.y = b.y + b.h; p.y_vel = 0.0 } else { p.y = b.y - p.h; p.y_vel = -8.0 }
-    } else if cbi >= 0 {
-        CoinBox c = G.coinboxes[cbi]
-        if p.y > c.y { p.y = c.y + c.h; p.y_vel = 0.0 } else { p.y = c.y - p.h; p.y_vel = -8.0 }
-    }
-}
-
-func fireballExplode(Powerup p) {
-    p.frame_index = 4
-    p.state = PS_EXPLODING
-    p.anim_timer = NOW
-}
-
-func powerupDeleteIfOffScreen(Powerup p) {
-    if p.x + p.w < (G.viewport_x - 300.0) { p.active = false }
-    else if p.y > SH { p.active = false }
-}
-
-func adjustPowerupPosition() {
-    for 0:G.powerups.len() - 1 to i {
-        Powerup p = G.powerups[i]
-        if not p.active { continue }
-        if p.kind == PK_FIREBALL {
-            if p.state == PS_EXPLODING { continue }
-            p.x = p.x + p.x_vel
-            // 撞地形 → 爆炸
-            int ci = findSolid(p.x, p.y, p.w, p.h)
-            int bi = findBrick(p.x, p.y, p.w, p.h)
-            int cbi = findCoinBox(p.x, p.y, p.w, p.h)
-            if ci >= 0 or bi >= 0 or cbi >= 0 {
-                fireballExplode(p)
-            } else {
-                p.y = p.y + p.y_vel
-                int ci2 = findSolid(p.x, p.y, p.w, p.h)
-                int bi2 = findBrick(p.x, p.y, p.w, p.h)
-                int cbi2 = findCoinBox(p.x, p.y, p.w, p.h)
-                int ei = findEnemy(p.x, p.y, p.w, p.h)
-                if ei >= 0 {
-                    Enemy e = G.enemies[ei]
-                    if g_audio { sfxKick.play() }
-                    addScore(100, e.x + e.w * 0.5 - G.viewport_x, e.y)
-                    enemyKickByBlock(e, p.x + p.w * 0.5)
-                    fireballExplode(p)
-                } else if ci2 >= 0 or bi2 >= 0 or cbi2 >= 0 {
-                    if ci2 >= 0 { p.y = G.solids[ci2].y - p.h } else if bi2 >= 0 { p.y = G.bricks[bi2].y - p.h } else { p.y = G.coinboxes[cbi2].y - p.h }
-                    p.y_vel = -8.0
-                    if p.direction == 1 { p.x_vel = 15.0 } else { p.x_vel = -15.0 }
-                    p.state = PS_BOUNCING
-                } else if p.state == PS_BOUNCING {
-                    p.y_vel = p.y_vel + p.gravity
-                }
-                if p.x > G.viewport_x + SW + 40.0 or p.x < G.viewport_x - 40.0 or p.y > SH + 40.0 { p.active = false }
-            }
-        } else if p.kind == PK_STAR {
-            if p.state == PS_BOUNCE {
-                p.x = p.x + p.x_vel
-                powerupCheckX(p)
-                p.y = p.y + p.y_vel
-                starCheckY(p)
-                p.y_vel = p.y_vel + p.gravity
-                powerupDeleteIfOffScreen(p)
-            }
-        } else {
-            if p.state != PS_REVEAL {
-                p.x = p.x + p.x_vel
-                powerupCheckX(p)
-                p.y = p.y + p.y_vel
-                powerupCheckY(p)
-                powerupDeleteIfOffScreen(p)
-            }
-        }
-    }
 }
 
 // ==================== 检查点 / 旗杆 / 死亡（level1.py） ====================
@@ -2446,22 +212,22 @@ func checkPoints() {
             m.state = ST_FLAGPOLE
             m.invincible = false
             m.frame_tint = 0
-            if g_audio { musInvincible.stop() }
+            stopInvincibleMusic()
             m.flag_right = c.x + c.w
             m.flag_timer = 0.0
             if m.y + m.h < G.flag_y { m.y = G.flag_y - m.h }
             G.flag_state = 1
             createFlagScore(m.y + m.h)
-            playJingle(musFlag)
+            playFlagJingle()
         } else if c.kind == 2 {
             G.level_state = LS_CASTLE
             m.in_castle = true
         } else if c.kind == 3 {
             if m.y_vel < 0.0 {
                 // 隐藏 1UP 箱：生成在检查点矩形内（与参考一致：rect.bottom - 40）
-                addCoinBox(c.x, c.y + c.h - 40.0, CT_LIFE)
+                addCoinBox(G, c.x, c.y + c.h - 40.0, CT_LIFE)
                 int n = G.coinboxes.len() - 1
-                coinBoxStartBump(G.coinboxes[n])
+                coinBoxStartBump(G, G.coinboxes[n])
                 m.y_vel = 7.0
                 m.y = G.coinboxes[n].y + G.coinboxes[n].h
                 m.state = ST_FALL
@@ -2487,7 +253,7 @@ func restartLevel() {
         G.lives = 3
         G.score = 0
         G.coins = 0
-        playJingle(musOver)
+        playGameOverJingle()
         return
     }
     float start = 0.0
@@ -2495,10 +261,10 @@ func restartLevel() {
     G.viewport_x = start
     G.level_state = LS_NOTFROZEN
     G.death_wait = 0.0
-    setupLevel(G.level)
+    setupLevel(G, G.level)
     G.mario = newMario(start + 110.0)
     G.state = GS_PLAY
-    g_music_mode = 0
+    resetMusicMode()
     setMusic(1)
 }
 
@@ -2540,7 +306,7 @@ func updateTime() {
         else if G.time <= 0 {
             G.time = 0
             G.level_state = LS_FROZEN
-            startDeathJump(G.mario)
+            startDeathJump(G, G.mario)
         }
     }
 }
@@ -2550,7 +316,7 @@ func updateDying() {
         Enemy e = G.dying[i]
         if not e.active { continue }
         if e.state == ES_JUMPEDON {
-            if (NOW - e.death_timer) > 500.0 { e.active = false }
+            if (G.now - e.death_timer) > 500.0 { e.active = false }
         } else {
             e.y = e.y + e.y_vel
             e.x = e.x + e.x_vel
@@ -2561,365 +327,87 @@ func updateDying() {
 }
 
 func updateAllSprites() {
-    marioUpdate()
-    checkPipeEntry()                 // ↓ 钻水管（1-1 那根高水管 / 金币房出口水管）
-    if G.in_room { roomCoinsUpdate() }
+    marioUpdate(G)
+    checkPipeEntry(G)                 // ↓ 钻水管（1-1 那根高水管 / 金币房出口水管）
+    if G.in_room { roomCoinsUpdate(G) }
     flagUpdate()
     checkPoints()
-    for 0:G.enemies.len() - 1 to i { enemyAnimation(G.enemies[i]) }
+    for 0:G.enemies.len() - 1 to i { enemyAnimation(G, G.enemies[i]) }
     updateDying()
-    for 0:G.shells.len() - 1 to i { enemyAnimation(G.shells[i]) }
-    bricksUpdate()
-    coinboxesUpdate()
-    powerupsUpdate()
-    coinsUpdate()
-    piecesUpdate()
-    adjustMarioPosition()
-    adjustEnemyPosition()
-    adjustShellPosition()
-    adjustPowerupPosition()
+    for 0:G.shells.len() - 1 to i { enemyAnimation(G, G.shells[i]) }
+    bricksUpdate(G)
+    coinboxesUpdate(G)
+    powerupsUpdate(G)
+    coinsUpdate(G)
+    piecesUpdate(G)
+    adjustMarioPosition(G)
+    adjustEnemyPosition(G)
+    adjustShellPosition(G)
+    adjustPowerupPosition(G)
     if G.mario.in_transition { G.level_state = LS_FROZEN } 
     else if G.level_state == LS_FROZEN and not G.mario.dead { G.level_state = LS_NOTFROZEN }
     checkForMarioDeath()
     updateViewport()
     updateTime()
-    popsUpdate()
-    cleanDead()
+    popsUpdate(G)
+    cleanDead(G)
 }
 
 func updateDuringTransition() {
-    marioUpdate()
+    marioUpdate(G)
     if G.mario.in_transition { G.level_state = LS_FROZEN } 
     else if G.level_state == LS_FROZEN and not G.mario.dead { G.level_state = LS_NOTFROZEN }
     flagUpdate()
-    coinboxesUpdate()
+    coinboxesUpdate(G)
     updateDying()
-    popsUpdate()
+    popsUpdate(G)
     checkForMarioDeath()
-    cleanDead()
+    cleanDead(G)
 }
 
 func updateInCastle() {
     if G.time > 0 {
-        G.time_timer = G.time_timer + 48.0
-        if G.time_timer > 100.0 {
-            G.time_timer = 0.0
-            G.time = G.time - 1
-            G.score = G.score + 50
-        }
+        // 剩余时间换分：一帧结算 4 个单位（原来是 3 帧才扣 1 个 ⇒ 满 400 个单位
+        // 要跑 1200 帧 ≈ 20 秒，玩家进城堡后得干等十几秒才进下一关；原版是一口气快结算完）
+        int dec = 4
+        if G.time < dec { dec = G.time }
+        G.time = G.time - dec
+        G.score = G.score + 50 * dec
     } else {
         G.level_state = LS_FIREWORKS
         G.castle_flag_on = true
         G.castle_flag_y = 370.0
         G.clear_timer = 0.0
-        playJingle(musWorldClear)
+        playWorldClearJingle()
     }
     updateDying()
-    popsUpdate()
-    cleanDead()
+    popsUpdate(G)
+    cleanDead(G)
 }
 
 func updateFlagAndFireworks() {
     if G.castle_flag_y > 322.0 { G.castle_flag_y = G.castle_flag_y - 2.0 }
     G.clear_timer = G.clear_timer + 16.0
-    popsUpdate()
-    if G.clear_timer > 2600.0 {
+    popsUpdate(G)
+    // 通关 jingle（world_clear.wav 6.3 秒）**放完**再进下一关：原来写死 2600ms（≈2.6 秒）
+    // 就切关，音乐放到一半被掐掉。
+    //   · 至少 620ms：够城堡升旗（约 400ms）再留一点白；音频没启用 / 该音效加载失败时
+    //     isPlaying() 恒为 false ⇒ 也走这条路，不会死等
+    //   · 最多 10 秒：万一设备异常一直报"在播"，兜底放行别卡死
+    bool music_wait = G.clear_timer < 10000.0 and isWorldClearPlaying()
+    if G.clear_timer > 620.0 and not music_wait {
         if G.level < MAX_LEVEL { startLevel(G.level + 1) } else { G.state = GS_CLEAR }
     }
-    cleanDead()
+    cleanDead(G)
 }
 
 func updateLevel() {
-    warpsUpdate()                    // 钻水管动画（冻结期间也要跑）
+    warpsUpdate(G)                    // 钻水管动画（冻结期间也要跑）
     if G.banner_timer > 0.0 { G.banner_timer = G.banner_timer - 16.0 }
     if G.level_state == LS_NOTFROZEN { updateAllSprites() }
     else if G.level_state == LS_FROZEN { updateDuringTransition() }
     else if G.level_state == LS_CASTLE { updateInCastle() }
     else if G.level_state == LS_FIREWORKS { updateFlagAndFireworks() }
-}
-
-// ==================== 渲染 ====================
-
-// 从关卡背景图里"切"一块画到屏幕上：金币房的地面/水管直接复用背景图里的画，
-// 风格与主关卡 100% 一致，也不用额外美术资源
-func drawBgPiece(Renderer r, float wx, float wy, float w, float h,
-                 float dx, float dy, float dw, float dh) {
-    r.drawTextureFromTo(T_BG, wx / BG_MULT, wy / BG_MULT, w / BG_MULT, h / BG_MULT, dx, dy, dw, dh)
-}
-
-func renderCoinRoom(Renderer r) {
-    float cx = G.viewport_x
-    // 地面：整条切背景图的地面（同尺寸 ⇒ 不缩放、不变形）
-    drawBgPiece(r, 0.0, ROOM_FLOOR_Y, ROOM_W, 60.0, 0.0 - cx, ROOM_FLOOR_Y, ROOM_W, 60.0)
-    // 两根水管：切 1-1 那根高水管的画（只取上面 86px = 管口 + 一段管身 ⇒ 接到地面正好）
-    drawBgPiece(r, LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H,
-                ROOM_ENTRY_X - cx, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
-    drawBgPiece(r, LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H,
-                ROOM_EXIT_X - cx, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
-    // 右端砖墙
-    float wy = 98.0
-    while wy < ROOM_FLOOR_Y - 2.0 {
-        float wx2 = ROOM_WALL_X
-        while wx2 < ROOM_W - 20.0 {
-            drawFrame(r, T_TILE, F_BRICK, 0, wx2 - cx, wy, BRICK_MULT, false, false)
-            wx2 = wx2 + 43.0
-        }
-        wy = wy + 43.0
-    }
-    // 房间金币
-    for 0:G.room_coins.len() - 1 to i {
-        Coin c = G.room_coins[i]
-        if not c.active { continue }
-        drawFrame(r, T_ITEM, F_COIN, c.frame_index, c.x - cx, c.y, SIZE_MULT, false, false)
-    }
-}
-
-func renderFlagpole(Renderer r) {
-    float cx = G.viewport_x
-    drawSpr(r, T_TILE, 228, 120, 8, 8, G.flag_x + 2.0 - cx, 97.0 - 8.0, 8.0 * SIZE_MULT, 8.0 * SIZE_MULT, false, false)
-    for 0:9 to i {
-        float py = 97.0 + _float(i) * 40.0
-        if i == 9 { py = 450.0 }
-        drawSpr(r, T_TILE, 263, 144, 2, 16, G.flag_x - cx, py, 2.0 * BRICK_MULT, 16.0 * BRICK_MULT, false, false)
-    }
-    drawSpr(r, T_ITEM, 128, 32, 16, 16, G.flag_x - cx, G.flag_y, 16.0 * BRICK_MULT, 16.0 * BRICK_MULT, false, false)
-    if G.castle_flag_on {
-        drawSpr(r, T_ITEM, 129, 2, 14, 14, 8745.0 - cx, G.castle_flag_y, 14.0 * SIZE_MULT, 14.0 * SIZE_MULT, false, false)
-    }
-}
-
-func renderBricks(Renderer r) {
-    float cx = G.viewport_x
-    for 0:G.bricks.len() - 1 to i {
-        Brick b = G.bricks[i]
-        if not b.visible { continue }
-        if b.x + b.w < cx - 40.0 or b.x > cx + SW + 40.0 { continue }
-        int fi = 0
-        if b.frame_index == 1 { fi = 1 }
-        drawFrame(r, T_TILE, F_BRICK, fi, b.x - cx, b.y, BRICK_MULT, false, false)
-    }
-}
-
-func renderCoinBoxes(Renderer r) {
-    float cx = G.viewport_x
-    for 0:G.coinboxes.len() - 1 to i {
-        CoinBox c = G.coinboxes[i]
-        if c.x + c.w < cx - 40.0 or c.x > cx + SW + 40.0 { continue }
-        drawFrame(r, T_TILE, F_COINBOX, c.frame_index, c.x - cx, c.y, BRICK_MULT, false, false)
-    }
-}
-
-func renderCoins(Renderer r) {
-    float cx = G.viewport_x
-    for 0:G.coins_arr.len() - 1 to i {
-        Coin c = G.coins_arr[i]
-        if not c.active { continue }
-        drawFrame(r, T_ITEM, F_COIN, c.frame_index, c.x - cx, c.y, SIZE_MULT, false, false)
-    }
-}
-
-func renderPieces(Renderer r) {
-    float cx = G.viewport_x
-    for 0:G.pieces.len() - 1 to i {
-        Piece p = G.pieces[i]
-        if not p.active { continue }
-        drawFrame(r, T_ITEM, F_PIECE, 0, p.x - cx, p.y, BRICK_MULT, p.flip, false)
-    }
-}
-
-func renderPowerups(Renderer r) {
-    float cx = G.viewport_x
-    for 0:G.powerups.len() - 1 to i {
-        Powerup p = G.powerups[i]
-        if not p.active { continue }
-        float dx = p.x - cx
-        if dx < -60.0 or dx > SW + 60.0 { continue }
-        if p.kind == PK_FIREBALL {
-            if p.state == PS_EXPLODING {
-                int fi = p.frame_index - 4
-                if fi < 0 { fi = 0 }
-                if fi > 2 { fi = 2 }
-                drawFrame(r, T_ITEM, F_FBEXP, fi, dx - 10.0, p.y - 10.0, SIZE_MULT, false, false)
-            } else {
-                drawFrame(r, T_ITEM, F_FIREBALL, p.frame_index, dx, p.y, SIZE_MULT, false, false)
-            }
-        } else if p.kind == PK_MUSHROOM {
-            drawFrame(r, T_ITEM, F_MUSHROOM, 0, dx, p.y, SIZE_MULT, false, false)
-        } else if p.kind == PK_LIFE {
-            drawFrame(r, T_ITEM, F_LIFE, 0, dx, p.y, SIZE_MULT, false, false)
-        } else if p.kind == PK_FIREFLOWER {
-            drawFrame(r, T_ITEM, F_FLOWER, p.frame_index, dx, p.y, SIZE_MULT, false, false)
-        } else if p.kind == PK_STAR {
-            drawFrame(r, T_ITEM, F_STAR, p.frame_index, dx, p.y, SIZE_MULT, false, false)
-        }
-    }
-}
-
-func renderEnemy(Renderer r, Enemy e, float cx) {
-    float dx = e.x - cx
-    if dx < -80.0 or dx > SW + 80.0 { return }
-    if e.kind == EK_GOOMBA {
-        if e.state == ES_DEATHJUMP {
-            drawFrame(r, T_ENEMY, F_GOOMBA, 1, dx, e.y, SIZE_MULT, false, true)
-            return
-        }
-        drawFrame(r, T_ENEMY, F_GOOMBA, e.frame_index, dx, e.y, SIZE_MULT, e.direction == 1, false)
-    } else {
-        if e.state == ES_DEATHJUMP {
-            drawFrame(r, T_ENEMY, F_KOOPA, 2, dx, e.y, SIZE_MULT, false, true)
-            return
-        }
-        drawFrame(r, T_ENEMY, F_KOOPA, e.frame_index, dx, e.y, SIZE_MULT, e.direction == 1, false)
-    }
-}
-
-func renderEnemies(Renderer r) {
-    float cx = G.viewport_x
-    for 0:G.enemies.len() - 1 to i {
-        Enemy e = G.enemies[i]
-        if e.active { renderEnemy(r, e, cx) }
-    }
-    for 0:G.shells.len() - 1 to i {
-        Enemy e = G.shells[i]
-        if e.active { renderEnemy(r, e, cx) }
-    }
-    for 0:G.dying.len() - 1 to i {
-        Enemy e = G.dying[i]
-        if e.active { renderEnemy(r, e, cx) }
-    }
-}
-
-func renderMario(Renderer r) {
-    Mario m = G.mario
-    if m.in_castle { return }
-    Array[int] a = marioFrames(m)
-    int idx = g_frame_idx
-    float alpha = marioAlpha(m)
-    if m.hurt_invincible and alpha == 0.0 { return }
-    // ★ 精灵在碰撞框内"水平居中 + 脚底对齐框底"：
-    //   走动帧 40 宽 = 框宽（严丝合缝）；站定帧只有 30 宽 ⇒ 左右各留 5px。
-    //   这样"身体"永远贴在框内，不会再出现"顶到水管/砖块却看着陷进去"的错位。
-    if a.len() < 4 { return }
-    int nn = a.len() / 4
-    int fi = idx
-    if fi < 0 { fi = 0 }
-    if fi >= nn { fi = fi - (fi / nn) * nn }
-    float fw = _float(a[fi * 4 + 2]) * SIZE_MULT
-    float fh = _float(a[fi * 4 + 3]) * SIZE_MULT
-    drawFrame(r, T_MARIO, a, idx, m.x - G.viewport_x + (m.w - fw) * 0.5, m.y + (m.h - fh),
-              SIZE_MULT, not m.facing_right, false)
-}
-
-func renderHud(Renderer r) {
-    if not G.fontSmall.ok { return }
-    Font f = G.fontSmall
-    r.drawText(f, "MARIO", 30.0, 8.0, #FFFFFFFF)
-    r.drawText(f, pad6(G.score), 30.0, 28.0, #FFFFFFFF)
-    r.drawText(f, "x" + pad2(G.coins), 290.0, 28.0, #FFFFFFFF)
-    r.drawText(f, "WORLD", 470.0, 8.0, #FFFFFFFF)
-    r.drawText(f, "1-" + _str(G.level), 482.0, 28.0, #FFFFFFFF)
-    r.drawText(f, "TIME", 650.0, 8.0, #FFFFFFFF)
-    r.drawText(f, pad3(G.time), 655.0, 28.0, #FFFFFFFF)
-    r.drawText(f, "LIVES " + _str(G.lives), 30.0, 50.0, #FFCCCCFF)
-}
-
-func renderPops(Renderer r) {
-    if not G.fontSmall.ok { return }
-    for 0:G.pops.len() - 1 to i {
-        ScorePop s = G.pops[i]
-        if not s.active { continue }
-        r.drawText(G.fontSmall, s.text, s.x, s.y, #FFFFFFFF)
-    }
-}
-
-func renderGame(Renderer r) {
-    r.setColorFloat(0.0, 0.0, 0.0, 1.0)
-    r.clear()
-    if G.state == GS_MENU {
-        renderFlagpole(r)
-        renderHud(r)
-        r.setColorFloat(0.0, 0.0, 0.0, 0.6)
-        r.fillRect(0.0, 0.0, _float(SW), _float(SH))
-        if G.font.ok {
-            r.drawTextCentered(G.font, "超级玛丽 1-1 ~ 1-4", 0.0, _float(SW), 200.0, #FFFFFFFF)
-            r.drawTextCentered(G.font, "← → 移动    A / 空格 跳跃", 0.0, _float(SW), 300.0, #DDDDDDFF)
-            r.drawTextCentered(G.font, "S / Shift 加速跑（火球键）    ↓ 蹲下", 0.0, _float(SW), 330.0, #DDDDDDFF)
-            if (_int(NOW / 500.0) - (_int(NOW / 500.0) / 2) * 2) == 0 {
-                r.drawTextCentered(G.font, "按 回车 开始", 0.0, _float(SW), 420.0, #FFD700FF)
-            }
-        }
-        SDL3.requestRedraw()
-        return
-    }
-
-    if G.in_room {
-        // 地下金币房：黑底 + 用背景图切片拼出的地面/水管/砖墙 + 房间金币
-        renderCoinRoom(r)
-    } else {
-        // 背景（level_1.png 按 BG_MULT 放大后取视口）
-        r.drawTextureFromTo(T_BG, G.viewport_x / BG_MULT, 0.0, _float(SW) / BG_MULT, _float(SH) / BG_MULT,
-                            0.0, 0.0, _float(SW), _float(SH))
-
-        // 1-4 是"城堡终章"：压一层暗色，做出城堡内部的感觉
-        if G.level == 4 {
-            r.setColorFloat(0.05, 0.03, 0.16, 0.55)
-            r.fillRect(0.0, 0.0, _float(SW), _float(SH))
-        }
-    }
-
-    renderPowerups(r)
-    renderCoins(r)
-    renderBricks(r)
-    renderCoinBoxes(r)
-    renderPieces(r)
-    renderFlagpole(r)
-    renderEnemies(r)
-    renderMario(r)
-    // 钻水管：把管口的画再盖一次 → 马里奥看起来就是"钻进管子里"（否则会盯着他从管子前面滑下去 ✗）
-    if G.warp_kind == 1 and not G.in_room {
-        drawBgPiece(r, LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_FLOOR_Y - LEVEL1_PIPE_TOP,
-                    LEVEL1_ENTRY_PIPE - G.viewport_x, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_FLOOR_Y - LEVEL1_PIPE_TOP)
-    } else if G.warp_kind == 2 and G.in_room {
-        drawBgPiece(r, LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H,
-                    ROOM_EXIT_X - G.viewport_x, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
-    }
-    renderHud(r)
-    renderPops(r)
-
-    // 开场横幅 "1-N"
-    if G.banner_timer > 0.0 {
-        r.setColorFloat(0.0, 0.0, 0.0, 0.55)
-        r.fillRect(0.0, 210.0, _float(SW), 80.0)
-        if G.font.ok {
-            r.drawTextCentered(G.font, "WORLD 1-" + _str(G.level), 0.0, _float(SW), 226.0, #FFFFFFFF)
-        }
-        if G.fontSmall.ok {
-            r.drawTextCentered(G.fontSmall, "LEVEL 1-" + _str(G.level) + " / " + _str(MAX_LEVEL), 0.0, _float(SW), 258.0, #DDDDDDFF)
-        }
-    }
-
-    if G.state == GS_OVER {
-        r.setColorFloat(0.0, 0.0, 0.0, 0.7)
-        r.fillRect(0.0, 0.0, _float(SW), _float(SH))
-        if G.font.ok {
-            r.drawTextCentered(G.font, "GAME OVER", 0.0, _float(SW), 250.0, #FF4444FF)
-            r.drawTextCentered(G.font, "最终得分 " + _str(G.score), 0.0, _float(SW), 310.0, #FFFFFFFF)
-            if (_int(NOW / 500.0) - (_int(NOW / 500.0) / 2) * 2) == 0 {
-                r.drawTextCentered(G.font, "按 回车 重新开始", 0.0, _float(SW), 380.0, #FFD700FF)
-            }
-        }
-    } else if G.state == GS_CLEAR {
-        r.setColorFloat(0.0, 0.0, 0.0, 0.7)
-        r.fillRect(0.0, 0.0, _float(SW), _float(SH))
-        if G.font.ok {
-            r.drawTextCentered(G.font, "恭喜通关！四关全清", 0.0, _float(SW), 230.0, #FFD700FF)
-            r.drawTextCentered(G.font, "得分 " + _str(G.score), 0.0, _float(SW), 290.0, #FFFFFFFF)
-            if (_int(NOW / 500.0) - (_int(NOW / 500.0) / 2) * 2) == 0 {
-                r.drawTextCentered(G.font, "按 回车 再玩一次", 0.0, _float(SW), 360.0, #FFFFFFFF)
-            }
-        }
-    }
-    SDL3.requestRedraw()
 }
 
 // ==================== 输入 ====================
@@ -2929,9 +417,9 @@ func startLevel(int lv) {
     G.viewport_x = 0.0
     G.level_state = LS_NOTFROZEN
     G.death_wait = 0.0
-    setupLevel(lv)
+    setupLevel(G, lv)
     G.state = GS_PLAY
-    g_music_mode = 0
+    resetMusicMode()
     setMusic(1)
 }
 
@@ -2954,51 +442,23 @@ func handleEvent(Event e): bool {
             }
             return true
         }
-        if sc == Scancode.LEFT { K.left = true }
-        else if sc == Scancode.RIGHT { K.right = true }
-        else if sc == Scancode.DOWN { K.down = true }
-        else if sc == Scancode.UP or sc == Scancode.SPACE or sc == Scancode.A { K.jump = true }
-        else if sc == Scancode.S or sc == Scancode.LSHIFT or sc == Scancode.RSHIFT { K.action = true }
+        if sc == Scancode.LEFT { G.K.left = true }
+        else if sc == Scancode.RIGHT { G.K.right = true }
+        else if sc == Scancode.DOWN { G.K.down = true }
+        else if sc == Scancode.UP or sc == Scancode.SPACE or sc == Scancode.A { G.K.jump = true }
+        else if sc == Scancode.S or sc == Scancode.LSHIFT or sc == Scancode.RSHIFT { G.K.action = true }
     } else if e.isKeyUp() {
         int sc = e.scancode()
-        if sc == Scancode.LEFT { K.left = false }
-        else if sc == Scancode.RIGHT { K.right = false }
-        else if sc == Scancode.DOWN { K.down = false }
-        else if sc == Scancode.UP or sc == Scancode.SPACE or sc == Scancode.A { K.jump = false }
-        else if sc == Scancode.S or sc == Scancode.LSHIFT or sc == Scancode.RSHIFT { K.action = false }
+        if sc == Scancode.LEFT { G.K.left = false }
+        else if sc == Scancode.RIGHT { G.K.right = false }
+        else if sc == Scancode.DOWN { G.K.down = false }
+        else if sc == Scancode.UP or sc == Scancode.SPACE or sc == Scancode.A { G.K.jump = false }
+        else if sc == Scancode.S or sc == Scancode.LSHIFT or sc == Scancode.RSHIFT { G.K.action = false }
     }
     return true
 }
 
 // ==================== 主函数 ====================
-
-// 把贴图缩放模式改回 NEAREST（像素画专用）——走 SDL3 模块新导出的 setTextureScaleMode
-func texNearest(Ptr[u8] tex) {
-    if tex == null { return }
-    SDL3.setTextureScaleMode(tex, ScaleMode.NEAREST)
-}
-
-func loadTextures(Ptr[u8] ren) {
-    string base = dirs.res_dir()
-    T_BG = SDL3.loadImageTexture(ren, base + "/image/level_1.png")
-    T_MARIO = SDL3.loadImageTexture(ren, base + "/image/mario_bros.png")
-    T_ENEMY = SDL3.loadImageTexture(ren, base + "/image/smb_enemies_sheet.png")
-    T_ITEM = SDL3.loadImageTexture(ren, base + "/image/item_objects.png")
-    T_TILE = SDL3.loadImageTexture(ren, base + "/image/tile_set.png")
-    // ★ 像素画必须用 NEAREST 缩放：SDL3 模块的 loadImageTexture 默认设成 LINEAR，
-    //   精灵图四周那些"A=0 但带颜色"的像素会被双线性插值掺进来，
-    //   放大 2.5 倍后就是一圈白/脏边的"描边"（马里奥看着有白边就是这个原因）
-    texNearest(T_BG)
-    texNearest(T_MARIO)
-    texNearest(T_ENEMY)
-    texNearest(T_ITEM)
-    texNearest(T_TILE)
-    if T_BG == null { print("[警告] level_1.png 加载失败") }
-    if T_MARIO == null { print("[警告] mario_bros.png 加载失败") }
-    if T_ENEMY == null { print("[警告] smb_enemies_sheet.png 加载失败") }
-    if T_ITEM == null { print("[警告] item_objects.png 加载失败") }
-    if T_TILE == null { print("[警告] tile_set.png 加载失败") }
-}
 
 main() {
     _console(false)
@@ -3025,8 +485,7 @@ main() {
     G = newGame()
     G.font = font
     G.fontSmall = fontSmall
-    gFont = font
-    K = new Keys()
+    G.K = new Keys()
     loadAudio()
 
     // ---- 自检钩子（MSHOT=<png> MAUTO_RUN=1 时才生效）----
@@ -3042,10 +501,24 @@ main() {
         var eLv = _env("MLEVEL")
         if eLv != null { lv0 = _int(_str(eLv)) }
         startLevel(lv0)
-        K.right = true
+        G.K.right = true
         // 自检时周期性跳跃，方便验证顶砖块 / 踩敌人
         var eJ = _env("MAUTO_JUMP")
-        if eJ != null { K.jump = true }
+        if eJ != null { G.K.jump = true }
+    }
+    // MFLAG=<0..4>：把马里奥直接放到旗杆上方（脚底 200+k），专测"滑杆 → 走城堡 →
+    // 换分 → 通关音乐放完 → 进下一关"整条收尾链（配 MSHOT=<png> MSHOT_AT=<帧> 用）。
+    // 不设就正常从菜单开始，正常玩不受影响。
+    var eFlagDbg = _env("MFLAG")
+    if eFlagDbg != null {
+        startLevel(1)
+        G.viewport_x = LEVEL_WIDTH - _float(SW)     // 相机推到关卡尾，城堡可见
+        Mario fm = G.mario
+        fm.x = 8469.0                               // 右缘 8509，压住旗杆检查点（8504..8510）
+        fm.y = 200.0 + _float(_int(_str(eFlagDbg))) - fm.h
+        fm.state = ST_WALK
+        fm.x_vel = 0.0
+        fm.y_vel = 0.0
     }
     if mShot != "" {
         win.setOverlay(func(Renderer r) {
@@ -3074,26 +547,18 @@ main() {
                 g_ren = r.handle
                 loadTextures(g_ren)
             }
-            NOW = SDL3.getTicks()
+            G.now = _float(SDL3.getTicks())    // 每帧快照：各模块统一读 g.now
             if G.state == GS_PLAY {
                 updateLevel()
                 G.frame = G.frame + 1.0
             } else {
                 G.frame = G.frame + 1.0
             }
-            renderGame(r)
+            renderGame(G, r)
         }
     )
 
-    stopMusic()
-    if g_audio {
-        bgm.uninit(); bgmFast.uninit(); musDeath.uninit(); musClear.uninit()
-        musWorldClear.uninit(); musOver.uninit(); musInvincible.uninit(); musFlag.uninit()
-        sfxSmallJump.uninit(); sfxBigJump.uninit(); sfxStomp.uninit(); sfxKick.uninit()
-        sfxCoin.uninit(); sfxBump.uninit(); sfxPowerup.uninit(); sfxPowerupApp.uninit()
-        sfxPipe.uninit(); sfxFireball.uninit(); sfxOneUp.uninit(); sfxBrickSmash.uninit()
-        audio.uninit()
-    }
+    uninitAudio()
     if fontSmall.ok { fontSmall.close() }
     if font.ok { font.close() }
     win.destroy()

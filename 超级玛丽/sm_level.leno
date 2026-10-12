@@ -1,0 +1,515 @@
+// sm_level.leno — 关卡数据与搭建（四关几何 / 物品 / 敌人 / 检查点）
+//
+// 拆自 super_mario.leno（2026-10-12 拆分）。跨模块约定：
+//   · 函数：use 模块.(函数名) ⇒ 直接调用，可省前缀
+//   · 常量：跨模块只能用 模块.X 访问 ⇒ 文件头用 const 起别名，正文写法与拆分前一致
+//   · 状态：不共享全局，一律显式收 Game g（沿用 LenoMusic 应用的"结构体 + 传参"写法）
+
+import "sm_types.leno" as types
+use types.(Mario, Box, Brick, CoinBox, Enemy, Checkpoint, Game)
+import "sm_util.leno" as u
+
+// ---- 常量别名（单一数据源在 sm_util.leno） ----
+const int SW = u.SW
+const int GROUND_HEIGHT = u.GROUND_HEIGHT
+const float WALK_ACCEL = u.WALK_ACCEL
+const float GRAVITY = u.GRAVITY
+const float JUMP_VEL = u.JUMP_VEL
+const float MAX_Y_VEL = u.MAX_Y_VEL
+const float MAX_WALK_SPEED = u.MAX_WALK_SPEED
+const int ST_WALK = u.ST_WALK
+const int CT_NONE = u.CT_NONE
+const int CT_COIN = u.CT_COIN
+const int CT_MUSHROOM = u.CT_MUSHROOM
+const int CT_STAR = u.CT_STAR
+const int CT_SIXCOINS = u.CT_SIXCOINS
+const int EK_GOOMBA = u.EK_GOOMBA
+const int EK_KOOPA = u.EK_KOOPA
+const int LS_NOTFROZEN = u.LS_NOTFROZEN
+const float LEVEL_WIDTH = u.LEVEL_WIDTH
+const float POLE_BASE_TOP = u.POLE_BASE_TOP
+
+// ==================== 关卡搭建（level1.py setup_*） ====================
+
+export func addSolid(Game g, float x, float y, float w, float h) {
+    Box b = new Box()
+    b.x = x; b.y = y; b.w = w; b.h = h
+    g.solids.add(b)
+}
+
+export func buildSolids(Game g) {
+    g.solids = []
+    // setup_ground：4 段地面（中间两处是坑）
+    addSolid(g, 0.0, 538.0, 2953.0, 60.0)
+    addSolid(g, 3048.0, 538.0, 635.0, 60.0)
+    addSolid(g, 3819.0, 538.0, 2735.0, 60.0)
+    addSolid(g, 6647.0, 538.0, 2300.0, 60.0)
+    // setup_pipes：6 根水管
+    addSolid(g, 1202.0, 452.0, 83.0, 82.0)
+    addSolid(g, 1631.0, 409.0, 83.0, 140.0)
+    addSolid(g, 1973.0, 366.0, 83.0, 170.0)
+    addSolid(g, 2445.0, 366.0, 83.0, 170.0)
+    addSolid(g, 6989.0, 452.0, 83.0, 82.0)
+    addSolid(g, 7675.0, 452.0, 83.0, 82.0)
+    // setup_steps：台阶
+    addSolid(g, 5745.0, 495.0, 40.0, 44.0)
+    addSolid(g, 5788.0, 452.0, 40.0, 44.0)
+    addSolid(g, 5831.0, 409.0, 40.0, 44.0)
+    addSolid(g, 5874.0, 366.0, 40.0, 176.0)
+    addSolid(g, 6001.0, 366.0, 40.0, 176.0)
+    addSolid(g, 6044.0, 408.0, 40.0, 40.0)
+    addSolid(g, 6087.0, 452.0, 40.0, 40.0)
+    addSolid(g, 6130.0, 495.0, 40.0, 40.0)
+    addSolid(g, 6345.0, 495.0, 40.0, 40.0)
+    addSolid(g, 6388.0, 452.0, 40.0, 40.0)
+    addSolid(g, 6431.0, 409.0, 40.0, 40.0)
+    addSolid(g, 6474.0, 366.0, 40.0, 40.0)
+    addSolid(g, 6517.0, 366.0, 40.0, 176.0)
+    addSolid(g, 6644.0, 366.0, 40.0, 176.0)
+    addSolid(g, 6687.0, 408.0, 40.0, 40.0)
+    addSolid(g, 6728.0, 452.0, 40.0, 40.0)
+    addSolid(g, 6771.0, 495.0, 40.0, 40.0)
+    addSolid(g, 7760.0, 495.0, 40.0, 40.0)
+    addSolid(g, 7803.0, 452.0, 40.0, 40.0)
+    addSolid(g, 7845.0, 409.0, 40.0, 40.0)
+    addSolid(g, 7888.0, 366.0, 40.0, 40.0)
+    addSolid(g, 7931.0, 323.0, 40.0, 40.0)
+    addSolid(g, 7974.0, 280.0, 40.0, 40.0)
+    addSolid(g, 8017.0, 237.0, 40.0, 40.0)
+    addSolid(g, 8060.0, 194.0, 40.0, 40.0)
+    addSolid(g, 8103.0, 194.0, 40.0, 360.0)
+    addSolid(g, 8488.0, POLE_BASE_TOP, 40.0, 40.0)
+}
+
+export func addBrick(Game g, float x, float y, int contents) {
+    Brick b = new Brick()
+    b.x = x; b.y = y; b.rest_y = y
+    b.contents = contents
+    if contents == CT_SIXCOINS { b.coin_total = 6 }
+    g.bricks.add(b)
+}
+
+export func addCoinBox(Game g, float x, float y, int contents) {
+    CoinBox c = new CoinBox()
+    c.x = x; c.y = y; c.rest_y = y
+    c.contents = contents
+    g.coinboxes.add(c)
+}
+
+export func addCp(Game g, float x, int kind, int group, float y, float w, float h) {
+    Checkpoint c = new Checkpoint()
+    c.x = x; c.y = y; c.w = w; c.h = h
+    c.kind = kind; c.group = group
+    g.cps.add(c)
+}
+
+export func addEnemy(Game g, int kind, int group, float home_y) {
+    Enemy e = new Enemy()
+    e.kind = kind; e.group = group; e.home_y = home_y
+    e.direction = 0
+    e.x_vel = -2.0
+    if kind == EK_GOOMBA { e.w = 40.0; e.h = 40.0 } else { e.w = 40.0; e.h = 60.0 }
+    e.active = false
+    g.enemies.add(e)
+}
+
+export func clearLevelData(Game g) {
+    g.solids = []
+    g.bricks = []
+    g.coinboxes = []
+    g.enemies = []
+    g.shells = []
+    g.dying = []
+    g.powerups = []
+    g.coins_arr = []
+    g.pieces = []
+    g.pops = []
+    g.cps = []
+    g.flag_x = 8505.0
+    g.flag_y = 100.0
+    g.flag_state = 0
+    g.castle_flag_y = 322.0
+    g.castle_flag_on = false
+    g.level_state = LS_NOTFROZEN
+    g.time = 400
+    g.time_timer = 0.0
+    g.death_wait = 0.0
+    g.clear_timer = 0.0
+    g.banner_timer = 0.0
+}
+
+// 按关卡号搭关卡；结构对应参考实现的 setup_ground / setup_pipes / setup_steps /
+// setup_bricks / setup_coin_boxes / setup_enemies / setup_checkpoints。
+// ⚠ 地面与坑沿用背景图 level_1.png 里画好的两处坑（2953-3048、6554-6647），
+//   所以四关共用同一份地面几何；关卡差异体现在水管/台阶/砖块/金币箱/敌人/检查点上。
+export func setupLevel(Game g, int lv) {
+    // 重开关卡 / 复活 / 切关时把金币房状态一并清掉
+    // （进房间走的是 buildCoinRoom，不经过 setupLevel，所以不会被误清）
+    g.in_room = false
+    g.warp_kind = 0
+    g.warp_t = 0.0
+    g.room_coins = []
+    // ★ 必须把关卡总长还回来：金币房把它改成了 900，不还原的话相机
+    //   clamp 到 level_w - SW = 100 ⇒ 一出房间往右走画面就跳回关卡开头，
+    //   马里奥直接跑出屏幕外 ✗（"出来后显示不正常"就是这个）
+    g.level_w = LEVEL_WIDTH
+    clearLevelData(g)
+    if lv == 1 {
+        buildSolids(g)
+
+    // setup_bricks（31 块）
+    addBrick(g, 858.0, 365.0, CT_NONE)
+    addBrick(g, 944.0, 365.0, CT_NONE)
+    addBrick(g, 1030.0, 365.0, CT_NONE)
+    addBrick(g, 3299.0, 365.0, CT_NONE)
+    addBrick(g, 3385.0, 365.0, CT_NONE)
+    addBrick(g, 3430.0, 193.0, CT_NONE)
+    addBrick(g, 3473.0, 193.0, CT_NONE)
+    addBrick(g, 3516.0, 193.0, CT_NONE)
+    addBrick(g, 3559.0, 193.0, CT_NONE)
+    addBrick(g, 3602.0, 193.0, CT_NONE)
+    addBrick(g, 3645.0, 193.0, CT_NONE)
+    addBrick(g, 3688.0, 193.0, CT_NONE)
+    addBrick(g, 3731.0, 193.0, CT_NONE)
+    addBrick(g, 3901.0, 193.0, CT_NONE)
+    addBrick(g, 3944.0, 193.0, CT_NONE)
+    addBrick(g, 3987.0, 193.0, CT_NONE)
+    addBrick(g, 4030.0, 365.0, CT_SIXCOINS)
+    addBrick(g, 4287.0, 365.0, CT_NONE)
+    addBrick(g, 4330.0, 365.0, CT_STAR)
+    addBrick(g, 5058.0, 365.0, CT_NONE)
+    addBrick(g, 5187.0, 193.0, CT_NONE)
+    addBrick(g, 5230.0, 193.0, CT_NONE)
+    addBrick(g, 5273.0, 193.0, CT_NONE)
+    addBrick(g, 5488.0, 193.0, CT_NONE)
+    addBrick(g, 5574.0, 193.0, CT_NONE)
+    addBrick(g, 5617.0, 193.0, CT_NONE)
+    addBrick(g, 5531.0, 365.0, CT_NONE)
+    addBrick(g, 5574.0, 365.0, CT_NONE)
+    addBrick(g, 7202.0, 365.0, CT_NONE)
+    addBrick(g, 7245.0, 365.0, CT_NONE)
+    addBrick(g, 7331.0, 365.0, CT_NONE)
+
+    // setup_coin_boxes（12 个）
+    addCoinBox(g, 685.0, 365.0, CT_COIN)
+    addCoinBox(g, 901.0, 365.0, CT_MUSHROOM)
+    addCoinBox(g, 987.0, 365.0, CT_COIN)
+    addCoinBox(g, 943.0, 193.0, CT_COIN)
+    addCoinBox(g, 3342.0, 365.0, CT_MUSHROOM)
+    addCoinBox(g, 4030.0, 193.0, CT_COIN)
+    addCoinBox(g, 4544.0, 365.0, CT_COIN)
+    addCoinBox(g, 4672.0, 365.0, CT_COIN)
+    addCoinBox(g, 4672.0, 193.0, CT_MUSHROOM)
+    addCoinBox(g, 4800.0, 365.0, CT_COIN)
+    addCoinBox(g, 5531.0, 193.0, CT_COIN)
+    addCoinBox(g, 7288.0, 365.0, CT_COIN)
+
+    // setup_enemies：16 只栗子怪 + 1 只乌龟，分 10 组
+    addEnemy(g, EK_GOOMBA, 1, 538.0)
+    addEnemy(g, EK_GOOMBA, 2, 538.0)
+    addEnemy(g, EK_GOOMBA, 3, 538.0)
+    addEnemy(g, EK_GOOMBA, 3, 538.0)
+    addEnemy(g, EK_GOOMBA, 4, 193.0)
+    addEnemy(g, EK_GOOMBA, 4, 193.0)
+    addEnemy(g, EK_GOOMBA, 5, 538.0)
+    addEnemy(g, EK_GOOMBA, 5, 538.0)
+    addEnemy(g, EK_KOOPA, 6, 538.0)
+    addEnemy(g, EK_GOOMBA, 7, 538.0)
+    addEnemy(g, EK_GOOMBA, 7, 538.0)
+    addEnemy(g, EK_GOOMBA, 8, 538.0)
+    addEnemy(g, EK_GOOMBA, 8, 538.0)
+    addEnemy(g, EK_GOOMBA, 9, 538.0)
+    addEnemy(g, EK_GOOMBA, 9, 538.0)
+    addEnemy(g, EK_GOOMBA, 10, 538.0)
+    addEnemy(g, EK_GOOMBA, 10, 538.0)
+
+    // setup_checkpoints
+    addCp(g, 510.0, 0, 1, 0.0, 10.0, 600.0)
+    addCp(g, 1400.0, 0, 2, 0.0, 10.0, 600.0)
+    addCp(g, 1740.0, 0, 3, 0.0, 10.0, 600.0)
+    addCp(g, 3080.0, 0, 4, 0.0, 10.0, 600.0)
+    addCp(g, 3750.0, 0, 5, 0.0, 10.0, 600.0)
+    addCp(g, 4150.0, 0, 6, 0.0, 10.0, 600.0)
+    addCp(g, 4470.0, 0, 7, 0.0, 10.0, 600.0)
+    addCp(g, 4950.0, 0, 8, 0.0, 10.0, 600.0)
+    addCp(g, 5100.0, 0, 9, 0.0, 10.0, 600.0)
+    addCp(g, 6800.0, 0, 10, 0.0, 10.0, 600.0)
+    addCp(g, 8504.0, 1, 0, 5.0, 6.0, 600.0)
+    addCp(g, 8775.0, 2, 0, 0.0, 10.0, 600.0)
+    addCp(g, 2740.0, 3, 12, 360.0, 40.0, 12.0)
+    } else if lv == 2 {
+        buildSolids2(g)
+        items2(g)
+    } else if lv == 3 {
+        buildSolids3(g)
+        items3(g)
+    } else {
+        buildSolids4(g)
+        items4(g)
+    }
+    // setup_mario：站在地面高度、视野左侧 +110
+    g.mario = newMario(g.viewport_x + 110.0)
+    g.banner_timer = 1500.0          // 开场 "1-N" 横幅
+}
+
+// ==================== 共用地面 / 收尾检查点 ====================
+
+// 四关共用：地面 4 段 + 旗杆底座（坑沿用背景图里画好的两处）
+export func addGroundShared(Game g) {
+    addSolid(g, 0.0, 538.0, 2953.0, 60.0)
+    addSolid(g, 3048.0, 538.0, 635.0, 60.0)
+    addSolid(g, 3819.0, 538.0, 2735.0, 60.0)
+    addSolid(g, 6647.0, 538.0, 2300.0, 60.0)
+    addSolid(g, 8488.0, POLE_BASE_TOP, 40.0, 40.0)
+}
+
+export func addEndCheckpoints(Game g) {
+    addCp(g, 8504.0, 1, 0, 5.0, 6.0, 600.0)     // 旗杆
+    addCp(g, 8775.0, 2, 0, 0.0, 10.0, 600.0)     // 城堡
+    addCp(g, 2740.0, 3, 12, 360.0, 40.0, 12.0)   // 隐藏 1UP
+}
+
+// ==================== 1-2「水管迷阵」====================
+
+export func buildSolids2(Game g) {
+    addGroundShared(g)
+    addSolid(g, 1202.0, 452.0, 83.0, 82.0)
+    addSolid(g, 1700.0, 409.0, 83.0, 140.0)
+    addSolid(g, 2600.0, 366.0, 83.0, 170.0)
+    addSolid(g, 4400.0, 366.0, 83.0, 170.0)
+    addSolid(g, 5300.0, 409.0, 83.0, 140.0)
+    addSolid(g, 6100.0, 452.0, 83.0, 82.0)
+    addSolid(g, 7400.0, 452.0, 83.0, 82.0)
+}
+
+export func items2(Game g) {
+    addBrick(g, 860.0, 365.0, CT_NONE)
+    addBrick(g, 946.0, 365.0, CT_NONE)
+    addBrick(g, 1032.0, 365.0, CT_NONE)
+    addBrick(g, 3200.0, 193.0, CT_NONE)
+    addBrick(g, 3286.0, 193.0, CT_NONE)
+    addBrick(g, 3372.0, 193.0, CT_SIXCOINS)
+    addBrick(g, 3458.0, 193.0, CT_NONE)
+    addBrick(g, 3544.0, 193.0, CT_NONE)
+    addBrick(g, 4200.0, 365.0, CT_NONE)
+    addBrick(g, 4286.0, 365.0, CT_STAR)
+    addBrick(g, 5600.0, 365.0, CT_NONE)
+    addBrick(g, 5686.0, 365.0, CT_NONE)
+    addBrick(g, 5772.0, 365.0, CT_NONE)
+    addBrick(g, 7000.0, 193.0, CT_NONE)
+    addBrick(g, 7086.0, 193.0, CT_NONE)
+    addBrick(g, 7172.0, 193.0, CT_NONE)
+    addBrick(g, 7258.0, 193.0, CT_NONE)
+
+    addCoinBox(g, 1200.0, 365.0, CT_COIN)
+    addCoinBox(g, 1286.0, 365.0, CT_MUSHROOM)
+    addCoinBox(g, 3300.0, 365.0, CT_COIN)
+    addCoinBox(g, 4600.0, 193.0, CT_COIN)
+    addCoinBox(g, 6200.0, 365.0, CT_MUSHROOM)
+    addCoinBox(g, 7500.0, 365.0, CT_COIN)
+
+    addEnemy(g, EK_GOOMBA, 1, 538.0)
+    addEnemy(g, EK_GOOMBA, 2, 538.0)
+    addEnemy(g, EK_GOOMBA, 3, 538.0)
+    addEnemy(g, EK_GOOMBA, 3, 538.0)
+    addEnemy(g, EK_GOOMBA, 4, 193.0)
+    addEnemy(g, EK_GOOMBA, 4, 193.0)
+    addEnemy(g, EK_GOOMBA, 5, 538.0)
+    addEnemy(g, EK_GOOMBA, 5, 538.0)
+    addEnemy(g, EK_KOOPA, 6, 538.0)
+    addEnemy(g, EK_GOOMBA, 7, 538.0)
+    addEnemy(g, EK_GOOMBA, 7, 538.0)
+    addEnemy(g, EK_GOOMBA, 8, 538.0)
+    addEnemy(g, EK_KOOPA, 9, 538.0)
+    addEnemy(g, EK_GOOMBA, 9, 538.0)
+    addEnemy(g, EK_GOOMBA, 10, 538.0)
+    addEnemy(g, EK_GOOMBA, 10, 538.0)
+
+    addCp(g, 600.0, 0, 1, 0.0, 10.0, 600.0)
+    addCp(g, 1400.0, 0, 2, 0.0, 10.0, 600.0)
+    addCp(g, 2200.0, 0, 3, 0.0, 10.0, 600.0)
+    addCp(g, 3000.0, 0, 4, 0.0, 10.0, 600.0)
+    addCp(g, 4000.0, 0, 5, 0.0, 10.0, 600.0)
+    addCp(g, 4800.0, 0, 6, 0.0, 10.0, 600.0)
+    addCp(g, 5400.0, 0, 7, 0.0, 10.0, 600.0)
+    addCp(g, 6000.0, 0, 8, 0.0, 10.0, 600.0)
+    addCp(g, 6800.0, 0, 9, 0.0, 10.0, 600.0)
+    addCp(g, 7600.0, 0, 10, 0.0, 10.0, 600.0)
+    addEndCheckpoints(g)
+}
+
+// ==================== 1-3「砖梯迷宫」====================
+
+export func buildSolids3(Game g) {
+    addGroundShared(g)
+    // 上楼梯 / 下楼梯（参考实现 setup_steps 的写法）
+    addSolid(g, 1000.0, 495.0, 40.0, 44.0)
+    addSolid(g, 1043.0, 452.0, 40.0, 44.0)
+    addSolid(g, 1086.0, 409.0, 40.0, 44.0)
+    addSolid(g, 1129.0, 366.0, 40.0, 176.0)
+    addSolid(g, 1400.0, 366.0, 40.0, 176.0)
+    addSolid(g, 1443.0, 409.0, 40.0, 40.0)
+    addSolid(g, 1486.0, 452.0, 40.0, 40.0)
+    addSolid(g, 1529.0, 495.0, 40.0, 40.0)
+    addSolid(g, 3000.0, 495.0, 40.0, 44.0)
+    addSolid(g, 3043.0, 452.0, 40.0, 44.0)
+    addSolid(g, 3086.0, 409.0, 40.0, 44.0)
+    addSolid(g, 3129.0, 366.0, 40.0, 44.0)
+    addSolid(g, 3400.0, 194.0, 40.0, 360.0)
+    // 高台阶（通往旗杆）
+    addSolid(g, 6200.0, 495.0, 40.0, 40.0)
+    addSolid(g, 6243.0, 452.0, 40.0, 40.0)
+    addSolid(g, 6286.0, 409.0, 40.0, 40.0)
+    addSolid(g, 6329.0, 366.0, 40.0, 40.0)
+    addSolid(g, 6372.0, 323.0, 40.0, 40.0)
+    addSolid(g, 6415.0, 280.0, 40.0, 40.0)
+    addSolid(g, 6458.0, 237.0, 40.0, 40.0)
+    addSolid(g, 6501.0, 194.0, 40.0, 40.0)
+    addSolid(g, 6544.0, 194.0, 40.0, 360.0)
+    // 水管
+    addSolid(g, 2200.0, 452.0, 83.0, 82.0)
+    addSolid(g, 4400.0, 409.0, 83.0, 140.0)
+    addSolid(g, 5600.0, 452.0, 83.0, 82.0)
+}
+
+export func items3(Game g) {
+    addBrick(g, 1700.0, 365.0, CT_NONE)
+    addBrick(g, 1786.0, 365.0, CT_NONE)
+    addBrick(g, 1872.0, 365.0, CT_NONE)
+    addBrick(g, 2600.0, 365.0, CT_SIXCOINS)
+    addBrick(g, 3500.0, 193.0, CT_NONE)
+    addBrick(g, 3586.0, 193.0, CT_NONE)
+    addBrick(g, 3672.0, 193.0, CT_STAR)
+    addBrick(g, 3758.0, 193.0, CT_NONE)
+    addBrick(g, 3844.0, 193.0, CT_NONE)
+    addBrick(g, 3930.0, 193.0, CT_NONE)
+    addBrick(g, 4700.0, 193.0, CT_NONE)
+    addBrick(g, 4786.0, 193.0, CT_NONE)
+    addBrick(g, 4872.0, 193.0, CT_NONE)
+    addBrick(g, 4958.0, 193.0, CT_NONE)
+    addBrick(g, 5800.0, 365.0, CT_NONE)
+    addBrick(g, 5886.0, 365.0, CT_NONE)
+    addBrick(g, 5972.0, 365.0, CT_NONE)
+    addBrick(g, 7000.0, 365.0, CT_NONE)
+    addBrick(g, 7086.0, 365.0, CT_NONE)
+    addBrick(g, 7172.0, 365.0, CT_NONE)
+
+    addCoinBox(g, 800.0, 365.0, CT_COIN)
+    addCoinBox(g, 2500.0, 365.0, CT_MUSHROOM)
+    addCoinBox(g, 4200.0, 193.0, CT_COIN)
+    addCoinBox(g, 5300.0, 365.0, CT_COIN)
+    addCoinBox(g, 6700.0, 365.0, CT_MUSHROOM)
+
+    addEnemy(g, EK_GOOMBA, 1, 538.0)
+    addEnemy(g, EK_GOOMBA, 2, 538.0)
+    addEnemy(g, EK_GOOMBA, 3, 538.0)
+    addEnemy(g, EK_GOOMBA, 3, 538.0)
+    addEnemy(g, EK_GOOMBA, 4, 193.0)
+    addEnemy(g, EK_GOOMBA, 4, 193.0)
+    addEnemy(g, EK_KOOPA, 5, 538.0)
+    addEnemy(g, EK_GOOMBA, 6, 538.0)
+    addEnemy(g, EK_GOOMBA, 6, 538.0)
+    addEnemy(g, EK_GOOMBA, 7, 538.0)
+    addEnemy(g, EK_KOOPA, 7, 538.0)
+    addEnemy(g, EK_KOOPA, 8, 538.0)
+    addEnemy(g, EK_GOOMBA, 9, 538.0)
+    addEnemy(g, EK_GOOMBA, 9, 538.0)
+    addEnemy(g, EK_KOOPA, 10, 538.0)
+    addEnemy(g, EK_GOOMBA, 10, 538.0)
+
+    addCp(g, 500.0, 0, 1, 0.0, 10.0, 600.0)
+    addCp(g, 1200.0, 0, 2, 0.0, 10.0, 600.0)
+    addCp(g, 2000.0, 0, 3, 0.0, 10.0, 600.0)
+    addCp(g, 2900.0, 0, 4, 0.0, 10.0, 600.0)
+    addCp(g, 3600.0, 0, 5, 0.0, 10.0, 600.0)
+    addCp(g, 4400.0, 0, 6, 0.0, 10.0, 600.0)
+    addCp(g, 5200.0, 0, 7, 0.0, 10.0, 600.0)
+    addCp(g, 5900.0, 0, 8, 0.0, 10.0, 600.0)
+    addCp(g, 6600.0, 0, 9, 0.0, 10.0, 600.0)
+    addCp(g, 7200.0, 0, 10, 0.0, 10.0, 600.0)
+    addEndCheckpoints(g)
+}
+
+// ==================== 1-4「城堡终章」====================
+
+export func buildSolids4(Game g) {
+    addGroundShared(g)
+    addSolid(g, 1600.0, 452.0, 83.0, 82.0)
+    addSolid(g, 3600.0, 409.0, 83.0, 140.0)
+    addSolid(g, 6300.0, 452.0, 83.0, 82.0)
+    addSolid(g, 8103.0, 194.0, 40.0, 360.0)     // 旗杆前高台（参考实现最后一段）
+}
+
+export func items4(Game g) {
+    addBrick(g, 1400.0, 193.0, CT_NONE)
+    addBrick(g, 1486.0, 193.0, CT_NONE)
+    addBrick(g, 1572.0, 193.0, CT_NONE)
+    addBrick(g, 2700.0, 365.0, CT_NONE)
+    addBrick(g, 2786.0, 365.0, CT_NONE)
+    addBrick(g, 3900.0, 193.0, CT_NONE)
+    addBrick(g, 3986.0, 193.0, CT_SIXCOINS)
+    addBrick(g, 4072.0, 193.0, CT_NONE)
+    addBrick(g, 5100.0, 365.0, CT_NONE)
+    addBrick(g, 5186.0, 365.0, CT_NONE)
+    addBrick(g, 6100.0, 193.0, CT_NONE)
+    addBrick(g, 6186.0, 193.0, CT_STAR)
+    addBrick(g, 6272.0, 193.0, CT_NONE)
+    addBrick(g, 7300.0, 365.0, CT_NONE)
+    addBrick(g, 7386.0, 365.0, CT_NONE)
+
+    addCoinBox(g, 1200.0, 365.0, CT_COIN)
+    addCoinBox(g, 2900.0, 365.0, CT_MUSHROOM)
+    addCoinBox(g, 4100.0, 365.0, CT_COIN)
+    addCoinBox(g, 5300.0, 365.0, CT_COIN)
+    addCoinBox(g, 6500.0, 365.0, CT_MUSHROOM)
+    addCoinBox(g, 7600.0, 365.0, CT_COIN)
+
+    addEnemy(g, EK_GOOMBA, 1, 538.0)
+    addEnemy(g, EK_KOOPA, 2, 538.0)
+    addEnemy(g, EK_GOOMBA, 3, 538.0)
+    addEnemy(g, EK_GOOMBA, 3, 538.0)
+    addEnemy(g, EK_KOOPA, 4, 538.0)
+    addEnemy(g, EK_GOOMBA, 5, 538.0)
+    addEnemy(g, EK_GOOMBA, 5, 538.0)
+    addEnemy(g, EK_KOOPA, 6, 538.0)
+    addEnemy(g, EK_GOOMBA, 7, 538.0)
+    addEnemy(g, EK_GOOMBA, 7, 538.0)
+    addEnemy(g, EK_KOOPA, 8, 538.0)
+    addEnemy(g, EK_GOOMBA, 9, 538.0)
+    addEnemy(g, EK_GOOMBA, 9, 538.0)
+
+    addCp(g, 600.0, 0, 1, 0.0, 10.0, 600.0)
+    addCp(g, 1400.0, 0, 2, 0.0, 10.0, 600.0)
+    addCp(g, 2400.0, 0, 3, 0.0, 10.0, 600.0)
+    addCp(g, 3300.0, 0, 4, 0.0, 10.0, 600.0)
+    addCp(g, 4300.0, 0, 5, 0.0, 10.0, 600.0)
+    addCp(g, 5000.0, 0, 6, 0.0, 10.0, 600.0)
+    addCp(g, 5700.0, 0, 7, 0.0, 10.0, 600.0)
+    addCp(g, 6800.0, 0, 8, 0.0, 10.0, 600.0)
+    addCp(g, 7500.0, 0, 9, 0.0, 10.0, 600.0)
+    addEndCheckpoints(g)
+}
+
+
+export func newMario(float x): Mario {
+    Mario m = new Mario()
+    m.x = x
+    m.y = GROUND_HEIGHT - 40.0
+    // ★ 碰撞框宽度取"该姿态最宽的精灵帧"：小马里奥的走动帧是 16px×2.5 = 40，
+    //   若框只有 30（= 站定帧 12px 宽），精灵就会从框的右边挂出去 10px
+    //   ⇒ 顶到水管/砖块时人物"陷"进方块里（参考实现 rect=image.get_rect() 也有这毛病）
+    m.w = 40.0
+    m.h = 40.0
+    m.state = ST_WALK
+    m.frame_index = 0
+    m.facing_right = true
+    m.allow_jump = true
+    m.allow_fireball = true
+    m.max_x_vel = MAX_WALK_SPEED
+    m.max_y_vel = MAX_Y_VEL
+    m.x_accel = WALK_ACCEL
+    m.jump_vel = JUMP_VEL
+    m.gravity = GRAVITY
+    return m
+}
+

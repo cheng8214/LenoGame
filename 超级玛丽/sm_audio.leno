@@ -1,0 +1,144 @@
+// sm_audio.leno — 音频（LenoMusic）：Sound/Sfx 实例与开关状态都收在本模块，
+// 对外只暴露**语义化操作**（playCoin / playJump / playFlagJingle ...）。
+//
+// 为什么状态关在模块里：跨模块拿不到别人的 var（use 只能带类型/函数/const，
+// 且结构体/数组型 export var 到了别的模块会退化成 any）⇒ 与其把 20 多个
+// Sound/Sfx 传来传去，不如"谁拥有状态谁提供操作"。这与 LenoMusic 自己的
+// music_player.leno 同款写法（_engineRefs 也是模块私有）。
+//
+// 好处：调用方不必再写 `if g_audio { ... }`——静音开关的判断收进每个包装函数里，
+// 业务代码只剩 `playCoin()` / `playJump(m.big)`。
+import "Music" as audio
+use audio.(Sound, Sfx)
+
+// ---- 音乐（长音，需要能停/能查在播）----
+Sound bgm
+Sound bgmFast
+Sound musDeath
+Sound musClear
+Sound musWorldClear
+Sound musOver
+Sound musInvincible
+Sound musFlag
+
+// ---- 音效（短音，构造时已做多实例轮转）----
+Sfx sfxSmallJump
+Sfx sfxBigJump
+Sfx sfxStomp
+Sfx sfxKick
+Sfx sfxCoin
+Sfx sfxBump
+Sfx sfxPowerup
+Sfx sfxPowerupApp
+Sfx sfxPipe
+Sfx sfxFireball
+Sfx sfxOneUp
+Sfx sfxBrickSmash
+
+// 静音开关：音频设备不可用时置 false，之后所有操作直接跳过
+bool g_audio = false
+float g_music_mode = 0        // 0 无 1 普通 2 加速
+
+export func loadAudio() {
+    bgm = audio.createSound("sound/main_theme.ogg")
+    bgmFast = audio.createSound("sound/main_theme_sped_up.ogg")
+    musDeath = audio.createSound("sound/death.wav")
+    musClear = audio.createSound("sound/stage_clear.wav")
+    musWorldClear = audio.createSound("sound/world_clear.wav")
+    musOver = audio.createSound("sound/game_over.ogg")
+    musInvincible = audio.createSound("sound/invincible.ogg")
+    musFlag = audio.createSound("sound/flagpole.wav")
+    if not bgm.ok {
+        print("[提示] 音频未加载（静音运行）")
+        g_audio = false
+        return
+    }
+    bgm.setLooping(true)
+    bgm.setVolume(0.45)
+    bgmFast.setLooping(true)
+    bgmFast.setVolume(0.45)
+    musInvincible.setLooping(true)
+    musInvincible.setVolume(0.5)
+    sfxSmallJump = audio.createSfx("sound/small_jump.ogg", 3, 0.55)
+    sfxBigJump = audio.createSfx("sound/big_jump.ogg", 3, 0.55)
+    sfxStomp = audio.createSfx("sound/stomp.ogg", 3, 0.6)
+    sfxKick = audio.createSfx("sound/kick.ogg", 3, 0.6)
+    sfxCoin = audio.createSfx("sound/coin.ogg", 3, 0.5)
+    sfxBump = audio.createSfx("sound/bump.ogg", 3, 0.5)
+    sfxPowerup = audio.createSfx("sound/powerup.ogg", 2, 0.6)
+    sfxPowerupApp = audio.createSfx("sound/powerup_appears.ogg", 2, 0.6)
+    sfxPipe = audio.createSfx("sound/pipe.ogg", 2, 0.5)
+    sfxFireball = audio.createSfx("sound/fireball.ogg", 3, 0.5)
+    sfxOneUp = audio.createSfx("sound/one_up.ogg", 2, 0.6)
+    sfxBrickSmash = audio.createSfx("sound/brick_smash.ogg", 3, 0.55)
+    g_audio = true
+}
+
+// ==================== 背景音乐 ====================
+
+export func stopMusic() {
+    if not g_audio { return }
+    bgm.stop(); bgmFast.stop(); musInvincible.stop()
+}
+
+// 切关 / 复活时重置：让随后的 setMusic(1) 一定会重新起主题曲（不该被"模式没变"挡住）
+export func resetMusicMode() { g_music_mode = 0 }
+
+export func setMusic(int mode) {      // 1 普通主题 2 加速主题
+    if not g_audio { return }
+    if g_music_mode == mode { return }
+    stopMusic()
+    g_music_mode = mode
+    if mode == 1 { bgm.play() } else if mode == 2 { bgmFast.play() }
+}
+
+// 过关/死亡这类"过场音乐"：先停掉当前 BGM 再放（文件私有）
+func playJingle(Sound s) {
+    if not g_audio { return }
+    stopMusic()
+    s.play()
+}
+
+export func playDeathJingle() { playJingle(musDeath) }
+export func playFlagJingle() { playJingle(musFlag) }
+export func playGameOverJingle() { playJingle(musOver) }
+export func playWorldClearJingle() { playJingle(musWorldClear) }
+export func playStageClearJingle() { playJingle(musClear) }
+
+// 无敌 BGM（循环，星道具期间一直放）
+export func playInvincibleMusic() { if g_audio { musInvincible.play() } }
+export func stopInvincibleMusic() { if g_audio { musInvincible.stop() } }
+
+// ==================== 音效 ====================
+
+export func playSmallJump() { if g_audio { sfxSmallJump.play() } }
+export func playBigJump() { if g_audio { sfxBigJump.play() } }
+// 跳跃音效按大小选：调用方不必再写 if m.big 分支
+export func playJump(bool big) { if big { playBigJump() } else { playSmallJump() } }
+export func playStomp() { if g_audio { sfxStomp.play() } }
+export func playKick() { if g_audio { sfxKick.play() } }
+export func playCoin() { if g_audio { sfxCoin.play() } }
+export func playBump() { if g_audio { sfxBump.play() } }
+export func playPowerup() { if g_audio { sfxPowerup.play() } }
+export func playPowerupAppears() { if g_audio { sfxPowerupApp.play() } }
+export func playPipe() { if g_audio { sfxPipe.play() } }
+export func playFireball() { if g_audio { sfxFireball.play() } }
+export func playOneUp() { if g_audio { sfxOneUp.play() } }
+export func playBrickSmash() { if g_audio { sfxBrickSmash.play() } }
+
+// ==================== 查询 / 收尾 ====================
+
+// 世界通关 jingle 是否还在放（收尾流程要等它放完再进下一关）
+export func isWorldClearPlaying(): bool { return g_audio and musWorldClear.isPlaying() }
+
+export func uninitAudio() {
+    stopMusic()
+    if g_audio {
+        bgm.uninit(); bgmFast.uninit(); musDeath.uninit(); musClear.uninit()
+        musWorldClear.uninit(); musOver.uninit(); musInvincible.uninit(); musFlag.uninit()
+        sfxSmallJump.uninit(); sfxBigJump.uninit(); sfxStomp.uninit(); sfxKick.uninit()
+        sfxCoin.uninit(); sfxBump.uninit(); sfxPowerup.uninit(); sfxPowerupApp.uninit()
+        sfxPipe.uninit(); sfxFireball.uninit(); sfxOneUp.uninit(); sfxBrickSmash.uninit()
+        audio.uninit()
+    }
+}

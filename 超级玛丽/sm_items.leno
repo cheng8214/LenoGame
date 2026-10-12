@@ -1,0 +1,696 @@
+// sm_items.leno — 物件与敌人（砖块 / 金币箱 / 道具 / 金币 / 碎片 / 飘字 / 敌人 / 龟壳 / 位置判定）
+//
+// 拆自 super_mario.leno（2026-10-12 拆分）。跨模块约定：
+//   · 函数：use 模块.(函数名) ⇒ 直接调用，可省前缀
+//   · 常量：跨模块只能用 模块.X 访问 ⇒ 文件头用 const 起别名，正文写法与拆分前一致
+//   · 状态：不共享全局，一律显式收 Game g（沿用 LenoMusic 应用的"结构体 + 传参"写法）
+
+import "SDL3" as SDL3
+use SDL3.(Flip)
+import "sm_types.leno" as types
+use types.(Mario, Box, Brick, CoinBox, Enemy, Powerup, Coin, Piece, ScorePop, Game)
+import "sm_util.leno" as u
+use u.(ovl)
+import "sm_audio.leno" as aud
+use aud.(playKick, playCoin, playPowerupAppears, playBump)
+
+// ---- 常量别名（单一数据源在 sm_util.leno） ----
+const int SW = u.SW
+const int SH = u.SH
+const float GRAVITY = u.GRAVITY
+const float MAX_Y_VEL = u.MAX_Y_VEL
+const int ES_WALK = u.ES_WALK
+const int ES_FALL = u.ES_FALL
+const int ES_JUMPEDON = u.ES_JUMPEDON
+const int ES_SHELLSLIDE = u.ES_SHELLSLIDE
+const int ES_DEATHJUMP = u.ES_DEATHJUMP
+const int PS_REVEAL = u.PS_REVEAL
+const int PS_SLIDE = u.PS_SLIDE
+const int PS_FALL = u.PS_FALL
+const int PS_RESTING = u.PS_RESTING
+const int PS_BOUNCE = u.PS_BOUNCE
+const int PS_BOUNCING = u.PS_BOUNCING
+const int PS_EXPLODING = u.PS_EXPLODING
+const int BS_RESTING = u.BS_RESTING
+const int BS_BUMPED = u.BS_BUMPED
+const int BS_OPENED = u.BS_OPENED
+const int CT_COIN = u.CT_COIN
+const int CT_MUSHROOM = u.CT_MUSHROOM
+const int CT_FIREFLOWER = u.CT_FIREFLOWER
+const int CT_STAR = u.CT_STAR
+const int CT_SIXCOINS = u.CT_SIXCOINS
+const int CT_LIFE = u.CT_LIFE
+const int PK_MUSHROOM = u.PK_MUSHROOM
+const int PK_FIREFLOWER = u.PK_FIREFLOWER
+const int PK_STAR = u.PK_STAR
+const int PK_LIFE = u.PK_LIFE
+const int PK_FIREBALL = u.PK_FIREBALL
+const int EK_GOOMBA = u.EK_GOOMBA
+
+// ==================== 碰撞查找（spritecollideany） ====================
+
+export func findSolid(Game g, float x, float y, float w, float h): int {
+    for 0:g.solids.len() - 1 to i {
+        Box b = g.solids[i]
+        if ovl(x, y, w, h, b.x, b.y, b.w, b.h) { return i }
+    }
+    return -1
+}
+
+export func findBrick(Game g, float x, float y, float w, float h): int {
+    for 0:g.bricks.len() - 1 to i {
+        Brick b = g.bricks[i]
+        if not b.visible { continue }
+        if ovl(x, y, w, h, b.x, b.y, b.w, b.h) { return i }
+    }
+    return -1
+}
+
+export func findCoinBox(Game g, float x, float y, float w, float h): int {
+    for 0:g.coinboxes.len() - 1 to i {
+        CoinBox c = g.coinboxes[i]
+        if ovl(x, y, w, h, c.x, c.y, c.w, c.h) { return i }
+    }
+    return -1
+}
+
+export func findEnemy(Game g, float x, float y, float w, float h): int {
+    for 0:g.enemies.len() - 1 to i {
+        Enemy e = g.enemies[i]
+        if not e.active { continue }
+        if ovl(x, y, w, h, e.x, e.y, e.w, e.h) { return i }
+    }
+    return -1
+}
+
+export func findShell(Game g, float x, float y, float w, float h): int {
+    for 0:g.shells.len() - 1 to i {
+        Enemy e = g.shells[i]
+        if ovl(x, y, w, h, e.x, e.y, e.w, e.h) { return i }
+    }
+    return -1
+}
+
+export func findPowerup(Game g, float x, float y, float w, float h): int {
+    for 0:g.powerups.len() - 1 to i {
+        Powerup p = g.powerups[i]
+        if not p.active { continue }
+        if ovl(x, y, w, h, p.x, p.y, p.w, p.h) { return i }
+    }
+    return -1
+}
+
+// ==================== 分数 / 飘字 ====================
+
+export func addScore(Game g, int v, float x, float y) {
+    g.score = g.score + v
+    ScorePop s = new ScorePop()
+    s.x = x
+    s.y = y
+    s.text = _str(v)
+    s.active = true
+    g.pops.add(s)
+}
+
+export func addScoreOneUp(Game g, float x, float y) {
+    g.lives = g.lives + 1
+    ScorePop s = new ScorePop()
+    s.x = x; s.y = y
+    s.text = "1UP"
+    s.active = true
+    g.pops.add(s)
+}
+
+// ==================== 砖块 / 金币箱 ====================
+
+export func spawnCoinFromBox(Game g, float cx, float y) {
+    Coin c = new Coin()
+    c.x = cx - 10.0
+    c.y = y - 5.0 - 35.0
+    c.initial_height = c.y + 35.0 - 5.0
+    c.y_vel = -15.0
+    c.frame_index = 0
+    c.active = true
+    g.coins_arr.add(c)
+}
+
+// 道具出场（coin_box.py bumped / bricks.py opened）
+export func spawnPowerup(Game g, int kind, float cx, float y) {
+    Powerup p = new Powerup()
+    p.kind = kind
+    p.w = 40.0
+    p.h = 40.0
+    p.x = cx - 20.0
+    p.y = y
+    p.state = PS_REVEAL
+    p.y_vel = -1.0
+    p.x_vel = 0.0
+    p.direction = 1
+    p.gravity = 1.0
+    p.max_y_vel = 8.0
+    p.box_height = y
+    p.frame_index = 0
+    if kind == PK_STAR { p.gravity = 0.4 }
+    p.active = true
+    g.powerups.add(p)
+}
+
+export func spawnPieces(Game g, float bx, float by) {
+    for 0:3 to i {
+        Piece p = new Piece()
+        if i == 0 { p.x = bx; p.y = by - 20.0; p.x_vel = -2.0; p.y_vel = -12.0; p.flip = false }
+        else if i == 1 { p.x = bx + 43.0; p.y = by - 20.0; p.x_vel = 2.0; p.y_vel = -12.0; p.flip = true }
+        else if i == 2 { p.x = bx; p.y = by; p.x_vel = -2.0; p.y_vel = -6.0; p.flip = false }
+        else { p.x = bx + 43.0; p.y = by; p.x_vel = 2.0; p.y_vel = -6.0; p.flip = true }
+        p.active = true
+        g.pieces.add(p)
+    }
+}
+
+// 顶砖块时把砖上的敌人踢死（level1.py check_if_enemy_on_brick）
+export func checkEnemyOnBrick(Game g, Brick br) {
+    int ei = findEnemy(g, br.x, br.y - 5.0, br.w, br.h)
+    if ei >= 0 {
+        Enemy e = g.enemies[ei]
+        playKick()
+        addScore(g, 100, e.x - g.viewport_x, e.y)
+        e.state = ES_DEATHJUMP
+        e.y_vel = -8.0
+        e.gravity = 0.5
+        e.frame_index = 3
+        if g.mario.x + g.mario.w * 0.5 > br.x + br.w * 0.5 { e.x_vel = 2.0 } else { e.x_vel = -2.0 }
+        g.dying.add(e)
+        e.active = false
+    }
+}
+
+export func brickStartBump(Game g, Brick b) {
+    b.y_vel = -6.0
+    b.state = BS_BUMPED
+    if b.contents == CT_SIXCOINS {
+        playCoin()
+        if b.coin_total > 0 {
+            spawnCoinFromBox(g, b.x + b.w * 0.5, b.y)
+            b.coin_total = b.coin_total - 1
+            if b.coin_total == 0 { b.frame_index = 1 }
+        }
+    } else if b.contents == CT_STAR {
+        playPowerupAppears()
+        b.frame_index = 1
+    }
+}
+
+export func bricksUpdate(Game g) {
+    for 0:g.bricks.len() - 1 to i {
+        Brick b = g.bricks[i]
+        if b.state == BS_BUMPED {
+            b.y = b.y + b.y_vel
+            b.y_vel = b.y_vel + b.gravity
+            if b.y >= (b.rest_y + 5.0) {
+                b.y = b.rest_y
+                if b.contents == CT_STAR { b.state = BS_OPENED } 
+                else if b.contents == CT_SIXCOINS { if b.coin_total == 0 { b.state = BS_OPENED } else { b.state = BS_RESTING } } 
+                else { b.state = BS_RESTING }
+            }
+        } else if b.state == BS_OPENED {
+            b.frame_index = 1
+            if b.contents == CT_STAR and b.powerup_in_box {
+                spawnPowerup(g, PK_STAR, b.x + b.w * 0.5, b.rest_y)
+                b.powerup_in_box = false
+            }
+        }
+    }
+}
+
+export func coinBoxStartBump(Game g, CoinBox c) {
+    c.y_vel = -6.0
+    c.state = BS_BUMPED
+    if c.contents == CT_COIN {
+        spawnCoinFromBox(g, c.x + c.w * 0.5, c.y)
+        playCoin()
+    } else {
+        playPowerupAppears()
+    }
+}
+
+export func coinboxesUpdate(Game g) {
+    for 0:g.coinboxes.len() - 1 to i {
+        CoinBox c = g.coinboxes[i]
+        if c.state == BS_BUMPED {
+            c.y = c.y + c.y_vel
+            c.y_vel = c.y_vel + c.gravity
+            c.frame_index = 3
+            if c.y > (c.rest_y + 5.0) {
+                c.y = c.rest_y
+                c.state = BS_OPENED
+                if c.contents == CT_MUSHROOM { spawnPowerup(g, PK_MUSHROOM, c.x + c.w * 0.5, c.y) }
+                else if c.contents == CT_FIREFLOWER { spawnPowerup(g, PK_FIREFLOWER, c.x + c.w * 0.5, c.y) }
+                else if c.contents == CT_LIFE { spawnPowerup(g, PK_LIFE, c.x + c.w * 0.5, c.y) }
+            }
+        } else if c.state == BS_RESTING {
+            c.anim_timer = c.anim_timer + 16.0
+            if c.first_half {
+                if c.frame_index == 0 {
+                    if c.anim_timer > 375.0 { c.frame_index = 1; c.anim_timer = 0.0 }
+                } else if c.frame_index < 2 {
+                    if c.anim_timer > 125.0 { c.frame_index = c.frame_index + 1; c.anim_timer = 0.0 }
+                } else if c.frame_index == 2 {
+                    if c.anim_timer > 125.0 { c.frame_index = 1; c.first_half = false; c.anim_timer = 0.0 }
+                }
+            } else {
+                if c.frame_index == 1 {
+                    if c.anim_timer > 125.0 { c.frame_index = 0; c.first_half = true; c.anim_timer = 0.0 }
+                }
+            }
+        }
+    }
+}
+
+// ==================== 道具 / 金币 / 碎片 ====================
+
+export func powerupsUpdate(Game g) {
+    for 0:g.powerups.len() - 1 to i {
+        Powerup p = g.powerups[i]
+        if not p.active { continue }
+        if p.kind == PK_FIREBALL {
+            if p.state == PS_EXPLODING {
+                if (g.now - p.anim_timer) > 50.0 {
+                    if p.frame_index < 6 { p.frame_index = p.frame_index + 1; p.anim_timer = g.now } else { p.active = false }
+                }
+            } else if (g.now - p.anim_timer) > 200.0 {
+                if p.frame_index < 3 { p.frame_index = p.frame_index + 1 } else { p.frame_index = 0 }
+                p.anim_timer = g.now
+            }
+        } else if p.kind == PK_STAR {
+            if p.state == PS_REVEAL {
+                p.y = p.y + p.y_vel
+                if p.y + p.h <= p.box_height {
+                    p.y = p.box_height - p.h
+                    p.y_vel = -2.0
+                    p.state = PS_BOUNCE
+                }
+            } else {
+                if p.direction == 0 { p.x_vel = -5.0 } else { p.x_vel = 5.0 }
+            }
+            if (g.now - p.anim_timer) > 30.0 {
+                if p.frame_index < 3 { p.frame_index = p.frame_index + 1 } else { p.frame_index = 0 }
+                p.anim_timer = g.now
+            }
+        } else if p.kind == PK_FIREFLOWER {
+            if p.state == PS_REVEAL {
+                p.y = p.y + p.y_vel
+                if p.y + p.h <= p.box_height { p.y = p.box_height - p.h; p.state = PS_RESTING }
+            }
+            if (g.now - p.anim_timer) > 30.0 {
+                if p.frame_index < 3 { p.frame_index = p.frame_index + 1 } else { p.frame_index = 0 }
+                p.anim_timer = g.now
+            }
+        } else {
+            if p.state == PS_REVEAL {
+                p.y = p.y + p.y_vel
+                if p.y + p.h <= p.box_height { p.y = p.box_height - p.h; p.y_vel = 0.0; p.state = PS_SLIDE }
+            } else if p.state == PS_SLIDE {
+                if p.direction == 1 { p.x_vel = 3.0 } else { p.x_vel = -3.0 }
+            } else if p.state == PS_FALL {
+                if p.y_vel < p.max_y_vel { p.y_vel = p.y_vel + p.gravity }
+            }
+        }
+    }
+}
+
+export func coinsUpdate(Game g) {
+    for 0:g.coins_arr.len() - 1 to i {
+        Coin c = g.coins_arr[i]
+        if not c.active { continue }
+        c.y = c.y + c.y_vel
+        c.y_vel = c.y_vel + c.gravity
+        if (g.now - c.anim_timer) > 80.0 {
+            if c.frame_index < 3 { c.frame_index = c.frame_index + 1 } else { c.frame_index = 0 }
+            c.anim_timer = g.now
+        }
+        if c.y + c.h > c.initial_height {
+            c.active = false
+            addScore(g, 200, c.x - g.viewport_x, c.y)
+        }
+    }
+}
+
+export func piecesUpdate(Game g) {
+    for 0:g.pieces.len() - 1 to i {
+        Piece p = g.pieces[i]
+        if not p.active { continue }
+        p.x = p.x + p.x_vel
+        p.y = p.y + p.y_vel
+        p.y_vel = p.y_vel + p.gravity
+        if p.y > SH + 50.0 { p.active = false }
+    }
+}
+
+export func popsUpdate(Game g) {
+    for 0:g.pops.len() - 1 to i {
+        ScorePop s = g.pops[i]
+        if not s.active { continue }
+        s.y = s.y + s.vy
+        if (g.now - s.timer) > 300.0 { s.vy = 0.0 }
+        if (g.now - s.timer) > 900.0 { s.active = false }
+    }
+}
+
+export func cleanDead(Game g) {
+    Array[Enemy] ke = []
+    for 0:g.enemies.len() - 1 to i { Enemy e = g.enemies[i]; if e.active or not e.released { ke.add(e) } }
+    g.enemies = ke
+    Array[Enemy] ks = []
+    for 0:g.shells.len() - 1 to i { Enemy e = g.shells[i]; if e.active { ks.add(e) } }
+    g.shells = ks
+    Array[Enemy] kd = []
+    for 0:g.dying.len() - 1 to i { Enemy e = g.dying[i]; if e.active { kd.add(e) } }
+    g.dying = kd
+    Array[Powerup] kp = []
+    for 0:g.powerups.len() - 1 to i { Powerup p = g.powerups[i]; if p.active { kp.add(p) } }
+    g.powerups = kp
+    Array[Coin] kc = []
+    for 0:g.coins_arr.len() - 1 to i { Coin c = g.coins_arr[i]; if c.active { kc.add(c) } }
+    g.coins_arr = kc
+    Array[Piece] kb = []
+    for 0:g.pieces.len() - 1 to i { Piece p = g.pieces[i]; if p.active { kb.add(p) } }
+    g.pieces = kb
+    Array[ScorePop] kpo = []
+    for 0:g.pops.len() - 1 to i { ScorePop s = g.pops[i]; if s.active { kpo.add(s) } }
+    g.pops = kpo
+}
+
+// ==================== 敌人（enemies.py） ====================
+
+export func enemyAnimation(Game g, Enemy e) {
+    if e.state == ES_WALK {
+        if (g.now - e.anim_timer) > 125.0 {
+            if e.frame_index == 0 { e.frame_index = 1 } else if e.frame_index == 1 { e.frame_index = 0 }
+            e.anim_timer = g.now
+        }
+    } else if e.state == ES_JUMPEDON {
+        e.frame_index = 2
+    } else if e.state == ES_SHELLSLIDE {
+        e.frame_index = 2
+    }
+}
+
+export func enemyDeleteIfOffScreen(Game g, Enemy e) {
+    if e.x < (g.viewport_x - 300.0) { e.active = false }
+    else if e.y > SH { e.active = false }
+    else if e.state == ES_SHELLSLIDE and e.x > (g.viewport_x + SW + 500.0) { e.active = false }
+}
+
+export func enemyCheckX(Game g, Enemy e, int self_index) {
+    int ci = findSolid(g, e.x, e.y, e.w, e.h)
+    if ci >= 0 {
+        Box c = g.solids[ci]
+        if e.direction == 1 { e.x = c.x - e.w; e.direction = 0; e.x_vel = -2.0 } 
+        else { e.x = c.x + c.w; e.direction = 1; e.x_vel = 2.0 }
+        return
+    }
+    // 敌人互撞
+    for 0:g.enemies.len() - 1 to i {
+        if i == self_index { continue }
+        Enemy o = g.enemies[i]
+        if not o.active { continue }
+        if ovl(e.x, e.y, e.w, e.h, o.x, o.y, o.w, o.h) {
+            if e.direction == 1 {
+                e.x = o.x - e.w; e.direction = 0; e.x_vel = -2.0
+                o.direction = 1; o.x_vel = 2.0
+            } else {
+                e.x = o.x + o.w; e.direction = 1; e.x_vel = 2.0
+                o.direction = 0; o.x_vel = -2.0
+            }
+            return
+        }
+    }
+}
+
+export func enemyCheckY(Game g, Enemy e) {
+    int ci = findSolid(g, e.x, e.y, e.w, e.h)
+    int bi = findBrick(g, e.x, e.y, e.w, e.h)
+    int cbi = findCoinBox(g, e.x, e.y, e.w, e.h)
+    if ci >= 0 {
+        Box c = g.solids[ci]
+        if e.y + e.h > c.y + c.h {
+            e.y_vel = 7.0
+            e.y = c.y + c.h
+            e.state = ES_FALL
+        } else if e.y + e.h < c.y + c.h {
+            e.y_vel = 0.0
+            e.y = c.y - e.h
+            e.state = ES_WALK
+        }
+    } else if bi >= 0 {
+        Brick b = g.bricks[bi]
+        if b.state == BS_BUMPED {
+            enemyKickByBlock(g, e, b.x + b.w * 0.5)
+        } else if e.x > b.x {
+            e.y_vel = 7.0
+            e.y = b.y + b.h
+            e.state = ES_FALL
+        } else {
+            e.y_vel = 0.0
+            e.y = b.y - e.h
+            e.state = ES_WALK
+        }
+    } else if cbi >= 0 {
+        CoinBox c = g.coinboxes[cbi]
+        if c.state == BS_BUMPED {
+            addScore(g, 100, e.x + e.w * 0.5 - g.viewport_x, e.y)
+            enemyKickByBlock(g, e, c.x + c.w * 0.5)
+        } else if e.x > c.x {
+            e.y_vel = 7.0
+            e.y = c.y + c.h
+            e.state = ES_FALL
+        } else {
+            e.y_vel = 0.0
+            e.y = c.y - e.h
+            e.state = ES_WALK
+        }
+    } else {
+        e.y = e.y + 1.0
+        int a = findSolid(g, e.x, e.y, e.w, e.h)
+        int b = findBrick(g, e.x, e.y, e.w, e.h)
+        int c = findCoinBox(g, e.x, e.y, e.w, e.h)
+        if a < 0 and b < 0 and c < 0 {
+            e.state = ES_FALL
+        }
+        e.y = e.y - 1.0
+    }
+}
+
+export func enemyKickByBlock(Game g, Enemy e, float block_cx) {
+    playKick()
+    e.state = ES_DEATHJUMP
+    e.y_vel = -8.0
+    e.gravity = 0.5
+    e.frame_index = 3
+    if g.mario.x + g.mario.w * 0.5 > block_cx { e.x_vel = 2.0 } else { e.x_vel = -2.0 }
+    g.dying.add(e)
+    e.active = false
+}
+
+export func adjustEnemyPosition(Game g) {
+    for 0:g.enemies.len() - 1 to i {
+        Enemy e = g.enemies[i]
+        if not e.active { continue }
+        if e.state == ES_DEATHJUMP {
+            e.y = e.y + e.y_vel
+            e.x = e.x + e.x_vel
+            e.y_vel = e.y_vel + e.gravity
+            if e.y > SH + 60.0 { e.active = false }
+            continue
+        }
+        if e.state == ES_JUMPEDON and e.kind == EK_GOOMBA {
+            if (g.now - e.death_timer) > 500.0 { e.active = false }
+            continue
+        }
+        if e.state == ES_SHELLSLIDE {
+            if e.direction == 1 { e.x_vel = 10.0 } else { e.x_vel = -10.0 }
+        } else if e.state == ES_FALL {
+            if e.y_vel < 10.0 { e.y_vel = e.y_vel + e.gravity }
+        }
+        e.x = e.x + e.x_vel
+        enemyCheckX(g, e, i)
+        e.y = e.y + e.y_vel
+        enemyCheckY(g, e)
+        enemyDeleteIfOffScreen(g, e)
+    }
+}
+
+// 龟壳：位置与碰撞（level1.py adjust_shell_position）
+export func adjustShellPosition(Game g) {
+    for 0:g.shells.len() - 1 to i {
+        Enemy s = g.shells[i]
+        if not s.active { continue }
+        if s.state == ES_DEATHJUMP {
+            s.y = s.y + s.y_vel
+            s.x = s.x + s.x_vel
+            s.y_vel = s.y_vel + s.gravity
+            if s.y > SH + 60.0 { s.active = false }
+            continue
+        }
+        s.x = s.x + s.x_vel
+        // 壳撞地形：弹回
+        int ci = findSolid(g, s.x, s.y, s.w, s.h)
+        if ci >= 0 {
+            Box c = g.solids[ci]
+            playBump()
+            if s.x_vel > 0.0 { s.direction = 0; s.x = c.x - s.w } else { s.direction = 1; s.x = c.x + c.w }
+        }
+        // 壳撞敌人：撞死
+        int ei = findEnemy(g, s.x, s.y, s.w, s.h)
+        if ei >= 0 {
+            Enemy e = g.enemies[ei]
+            playKick()
+            addScore(g, 100, e.x + e.w - g.viewport_x, e.y)
+            enemyKickByBlock(g, e, s.x + s.w * 0.5)
+        }
+        s.y = s.y + s.y_vel
+        int cj = findSolid(g, s.x, s.y, s.w, s.h)
+        if cj >= 0 {
+            Box c = g.solids[cj]
+            s.y_vel = 0.0
+            s.y = c.y - s.h
+            s.state = ES_SHELLSLIDE
+        } else {
+            s.y = s.y + 1.0
+            if findSolid(g, s.x, s.y, s.w, s.h) < 0 { s.state = ES_FALL }
+            s.y = s.y - 1.0
+        }
+        enemyDeleteIfOffScreen(g, s)
+    }
+}
+
+// ==================== 道具位置与碰撞（level1.py） ====================
+
+export func powerupCheckX(Game g, Powerup p) {
+    int ci = findSolid(g, p.x, p.y, p.w, p.h)
+    int bi = findBrick(g, p.x, p.y, p.w, p.h)
+    int cbi = findCoinBox(g, p.x, p.y, p.w, p.h)
+    if ci >= 0 {
+        Box c = g.solids[ci]
+        if p.x < c.x { p.x = c.x - p.w; p.direction = 0 } else { p.x = c.x + c.w; p.direction = 1 }
+    } else if bi >= 0 {
+        Brick b = g.bricks[bi]
+        if p.x < b.x { p.x = b.x - p.w; p.direction = 0 } else { p.x = b.x + b.w; p.direction = 1 }
+    } else if cbi >= 0 {
+        CoinBox c = g.coinboxes[cbi]
+        if p.x < c.x { p.x = c.x - p.w; p.direction = 0 } else { p.x = c.x + c.w; p.direction = 1 }
+    }
+}
+
+export func powerupCheckY(Game g, Powerup p) {
+    int ci = findSolid(g, p.x, p.y, p.w, p.h)
+    int bi = findBrick(g, p.x, p.y, p.w, p.h)
+    int cbi = findCoinBox(g, p.x, p.y, p.w, p.h)
+    if ci >= 0 {
+        Box c = g.solids[ci]
+        p.y = c.y - p.h
+        p.state = PS_SLIDE
+        p.y_vel = 0.0
+    } else if bi >= 0 {
+        Brick b = g.bricks[bi]
+        p.y = b.y - p.h
+        p.state = PS_SLIDE
+        p.y_vel = 0.0
+    } else if cbi >= 0 {
+        CoinBox c = g.coinboxes[cbi]
+        p.y = c.y - p.h
+        p.state = PS_SLIDE
+        p.y_vel = 0.0
+    } else {
+        p.y = p.y + 1.0
+        int a = findSolid(g, p.x, p.y, p.w, p.h)
+        int b = findBrick(g, p.x, p.y, p.w, p.h)
+        int c = findCoinBox(g, p.x, p.y, p.w, p.h)
+        if a < 0 and b < 0 and c < 0 { p.state = PS_FALL }
+        p.y = p.y - 1.0
+    }
+}
+
+export func starCheckY(Game g, Powerup p) {
+    int ci = findSolid(g, p.x, p.y, p.w, p.h)
+    int bi = findBrick(g, p.x, p.y, p.w, p.h)
+    int cbi = findCoinBox(g, p.x, p.y, p.w, p.h)
+    if ci >= 0 {
+        Box c = g.solids[ci]
+        if p.y > c.y { p.y = c.y + c.h; p.y_vel = 0.0 } else { p.y = c.y - p.h; p.y_vel = -8.0 }
+    } else if bi >= 0 {
+        Brick b = g.bricks[bi]
+        if p.y > b.y { p.y = b.y + b.h; p.y_vel = 0.0 } else { p.y = b.y - p.h; p.y_vel = -8.0 }
+    } else if cbi >= 0 {
+        CoinBox c = g.coinboxes[cbi]
+        if p.y > c.y { p.y = c.y + c.h; p.y_vel = 0.0 } else { p.y = c.y - p.h; p.y_vel = -8.0 }
+    }
+}
+
+export func fireballExplode(Game g, Powerup p) {
+    p.frame_index = 4
+    p.state = PS_EXPLODING
+    p.anim_timer = g.now
+}
+
+export func powerupDeleteIfOffScreen(Game g, Powerup p) {
+    if p.x + p.w < (g.viewport_x - 300.0) { p.active = false }
+    else if p.y > SH { p.active = false }
+}
+
+export func adjustPowerupPosition(Game g) {
+    for 0:g.powerups.len() - 1 to i {
+        Powerup p = g.powerups[i]
+        if not p.active { continue }
+        if p.kind == PK_FIREBALL {
+            if p.state == PS_EXPLODING { continue }
+            p.x = p.x + p.x_vel
+            // 撞地形 → 爆炸
+            int ci = findSolid(g, p.x, p.y, p.w, p.h)
+            int bi = findBrick(g, p.x, p.y, p.w, p.h)
+            int cbi = findCoinBox(g, p.x, p.y, p.w, p.h)
+            if ci >= 0 or bi >= 0 or cbi >= 0 {
+                fireballExplode(g, p)
+            } else {
+                p.y = p.y + p.y_vel
+                int ci2 = findSolid(g, p.x, p.y, p.w, p.h)
+                int bi2 = findBrick(g, p.x, p.y, p.w, p.h)
+                int cbi2 = findCoinBox(g, p.x, p.y, p.w, p.h)
+                int ei = findEnemy(g, p.x, p.y, p.w, p.h)
+                if ei >= 0 {
+                    Enemy e = g.enemies[ei]
+                    playKick()
+                    addScore(g, 100, e.x + e.w * 0.5 - g.viewport_x, e.y)
+                    enemyKickByBlock(g, e, p.x + p.w * 0.5)
+                    fireballExplode(g, p)
+                } else if ci2 >= 0 or bi2 >= 0 or cbi2 >= 0 {
+                    if ci2 >= 0 { p.y = g.solids[ci2].y - p.h } else if bi2 >= 0 { p.y = g.bricks[bi2].y - p.h } else { p.y = g.coinboxes[cbi2].y - p.h }
+                    p.y_vel = -8.0
+                    if p.direction == 1 { p.x_vel = 15.0 } else { p.x_vel = -15.0 }
+                    p.state = PS_BOUNCING
+                } else if p.state == PS_BOUNCING {
+                    p.y_vel = p.y_vel + p.gravity
+                }
+                if p.x > g.viewport_x + SW + 40.0 or p.x < g.viewport_x - 40.0 or p.y > SH + 40.0 { p.active = false }
+            }
+        } else if p.kind == PK_STAR {
+            if p.state == PS_BOUNCE {
+                p.x = p.x + p.x_vel
+                powerupCheckX(g, p)
+                p.y = p.y + p.y_vel
+                starCheckY(g, p)
+                p.y_vel = p.y_vel + p.gravity
+                powerupDeleteIfOffScreen(g, p)
+            }
+        } else {
+            if p.state != PS_REVEAL {
+                p.x = p.x + p.x_vel
+                powerupCheckX(g, p)
+                p.y = p.y + p.y_vel
+                powerupCheckY(g, p)
+                powerupDeleteIfOffScreen(g, p)
+            }
+        }
+    }
+}
+

@@ -1,0 +1,179 @@
+// sm_room.leno — 地下金币房（钻/出水管 + 房间构建 + 房间内金币）
+//
+// 拆自 super_mario.leno（2026-10-12 拆分）。跨模块约定：
+//   · 函数：use 模块.(函数名) ⇒ 直接调用，可省前缀
+//   · 常量：跨模块只能用 模块.X 访问 ⇒ 文件头用 const 起别名，正文写法与拆分前一致
+//   · 状态：不共享全局，一律显式收 Game g（沿用 LenoMusic 应用的"结构体 + 传参"写法）
+
+import "sm_types.leno" as types
+use types.(Mario, Coin, Game)
+import "sm_util.leno" as u
+use u.(ovl)
+import "sm_level.leno" as lv
+use lv.(addSolid, clearLevelData, setupLevel)
+import "sm_items.leno" as it
+use it.(addScore)
+import "sm_audio.leno" as aud
+use aud.(playCoin, playPipe)
+
+// ---- 常量别名（单一数据源在 sm_util.leno） ----
+const float GRAVITY = u.GRAVITY
+const int ST_STAND = u.ST_STAND
+const int LS_NOTFROZEN = u.LS_NOTFROZEN
+const int LS_FROZEN = u.LS_FROZEN
+const float ROOM_W = u.ROOM_W
+const float ROOM_FLOOR_Y = u.ROOM_FLOOR_Y
+const float ROOM_PIPE_W = u.ROOM_PIPE_W
+const float ROOM_PIPE_H = u.ROOM_PIPE_H
+const float ROOM_PIPE_TOP = u.ROOM_PIPE_TOP
+const float LEVEL1_PIPE_TOP = u.LEVEL1_PIPE_TOP
+const float ROOM_ENTRY_X = u.ROOM_ENTRY_X
+const float ROOM_EXIT_X = u.ROOM_EXIT_X
+const float ROOM_WALL_X = u.ROOM_WALL_X
+const float LEVEL1_ENTRY_PIPE = u.LEVEL1_ENTRY_PIPE
+const float LEVEL1_RETURN_PIPE = u.LEVEL1_RETURN_PIPE
+const float WARP_SINK_FRAMES = u.WARP_SINK_FRAMES
+
+// ==================== 地下金币房（1-1 高水管 ↓ 进入）====================
+// 参考实现（justinarmstrong 那版）没有这个机制，这里是照 NES 原版补的：
+// 站在 1-1 那根高水管顶上按 ↓ → 钻进管子 → 地下金币房（黑底 + 一排金币）→
+// 从房间右侧水管再按 ↓ → 出来时站在 1-1 后面那根水管顶上，大/火状态保留。
+// （相关常量放在文件顶部"常量"区，便于 setupLevel 引用）
+
+export func buildCoinRoom(Game g) {
+    addSolid(g, 0.0, ROOM_FLOOR_Y, ROOM_W, 60.0)
+    addSolid(g, ROOM_ENTRY_X, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
+    addSolid(g, ROOM_EXIT_X, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
+    addSolid(g, ROOM_WALL_X, 98.0, ROOM_W - ROOM_WALL_X, ROOM_FLOOR_Y - 98.0)
+    g.room_coins = []
+    for 0:7 to i {
+        addRoomCoin(g, 150.0 + _float(i) * 55.0, 460.0)
+    }
+}
+
+export func addRoomCoin(Game g, float x, float y) {
+    Coin c = new Coin()
+    c.x = x
+    c.y = y
+    c.w = 20.0
+    c.h = 35.0
+    c.y_vel = 0.0
+    c.gravity = 0.0
+    c.active = true
+    c.frame_index = 0
+    c.anim_timer = g.now
+    g.room_coins.add(c)
+}
+
+export func roomCoinsUpdate(Game g) {
+    Mario m = g.mario
+    for 0:g.room_coins.len() - 1 to i {
+        Coin c = g.room_coins[i]
+        if not c.active { continue }
+        if (g.now - c.anim_timer) > 130.0 {
+            if c.frame_index < 3 { c.frame_index = c.frame_index + 1 } else { c.frame_index = 0 }
+            c.anim_timer = g.now
+        }
+        if ovl(m.x, m.y, m.w, m.h, c.x, c.y, c.w, c.h) {
+            c.active = false
+            g.coins = g.coins + 1
+            addScore(g, 200, c.x - g.viewport_x, c.y - 20.0)
+            playCoin()
+        }
+    }
+}
+
+// 站在水管"正上方"并且按 ↓（脚底要压在水管顶上，且人在管子横向范围内）
+export func onPipeTop(Game g, float pipe_x, float pipe_top, Mario m): bool {
+    if not g.K.down { return false }
+    float foot = m.y + m.h
+    if foot < pipe_top - 4.0 or foot > pipe_top + 6.0 { return false }
+    if m.x + m.w <= pipe_x + 6.0 or m.x >= pipe_x + ROOM_PIPE_W - 6.0 { return false }
+    return true
+}
+
+export func checkPipeEntry(Game g) {
+    if g.warp_kind != 0 or g.mario.dead { return }
+    Mario m = g.mario
+    if m.state != ST_STAND { return }
+    if g.in_room {
+        if onPipeTop(g, ROOM_EXIT_X, ROOM_PIPE_TOP, m) { startPipeWarp(g, 2) }
+    } else {
+        if g.level != 1 { return }
+        if onPipeTop(g, LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, m) {
+            g.saved_big = m.big
+            g.saved_fire = m.fire
+            startPipeWarp(g, 1)
+        }
+    }
+}
+
+// 传送：借"马里奥过渡态"把关卡冻结（走 updateDuringTransition），动画自己做
+export func startPipeWarp(Game g, int kind) {
+    g.warp_kind = kind
+    g.warp_t = 56.0
+    Mario m = g.mario
+    m.in_transition = true
+    m.crouching = false
+    m.w = 40.0
+    if m.big { m.h = 80.0 } else { m.h = 40.0 }
+    m.x_vel = 0.0
+    m.y_vel = 0.0
+    m.state = ST_STAND
+    g.level_state = LS_FROZEN
+    playPipe()
+}
+
+export func warpsUpdate(Game g) {
+    if g.warp_kind == 0 { return }
+    Mario m = g.mario
+    g.warp_t = g.warp_t - 1.0
+    // 下沉距离 = 身高 + 6（保证整个身子都进到管口以下，大马里奥也不会露头）
+    if g.warp_t > 26.0 { m.y = m.y + (m.h + 6.0) / WARP_SINK_FRAMES }
+    if g.warp_t <= 0.0 {
+        g.warp_t = 0.0
+        if g.warp_kind == 1 { enterCoinRoom(g) } else { exitCoinRoom(g) }
+        g.warp_kind = 0
+    }
+}
+
+export func enterCoinRoom(Game g) {
+    clearLevelData(g)
+    buildCoinRoom(g)
+    g.in_room = true
+    g.level_w = ROOM_W
+    g.viewport_x = 0.0
+    g.banner_timer = 0.0
+    Mario m = g.mario
+    m.x = ROOM_ENTRY_X + (ROOM_PIPE_W - m.w) * 0.5
+    m.y = ROOM_PIPE_TOP - m.h
+    m.x_vel = 0.0
+    m.y_vel = 0.0
+    m.state = ST_STAND
+    m.in_transition = false
+    g.level_state = LS_NOTFROZEN
+}
+
+export func exitCoinRoom(Game g) {
+    bool wasBig = g.saved_big
+    bool wasFire = g.saved_fire
+    setupLevel(g, g.level)                 // 重建 1-1（内部会把房间状态清干净）
+    g.in_room = false
+    g.banner_timer = 0.0                // 别又弹一次 "1-1" 横幅
+    Mario m = g.mario
+    m.big = wasBig
+    m.fire = wasFire
+    m.w = 40.0
+    if wasBig { m.h = 80.0 } else { m.h = 40.0 }
+    m.x = LEVEL1_RETURN_PIPE + (ROOM_PIPE_W - m.w) * 0.5
+    m.y = LEVEL1_PIPE_TOP - m.h
+    m.x_vel = 0.0
+    m.y_vel = 0.0
+    m.state = ST_STAND
+    m.crouching = false
+    m.in_transition = false
+    g.viewport_x = LEVEL1_RETURN_PIPE - 300.0
+    if g.viewport_x < 0.0 { g.viewport_x = 0.0 }
+    g.level_state = LS_NOTFROZEN
+}
+

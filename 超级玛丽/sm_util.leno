@@ -1,0 +1,174 @@
+// sm_util.leno — 常量表 + 纯工具函数（无游戏状态依赖）
+//
+// 拆自 super_mario.leno（原文件把常量/工具/关卡/马里奥/敌人/渲染都塞在一起）。
+// 用法：import "sm_util.leno" as u
+//       use u.(SW, ST_FLAGPOLE, ovl, drawSpr, ...)   // 常量与函数都能这样引入
+//
+// ⚠ 跨模块铁律（本机实测）：`use` 只能带**类型/函数/const**，`var` 带不过来；
+//   而结构体/数组型 `export var` 到了别的模块会退化成 any ⇒ 共享可变状态一律"显式传参"
+import "SDL3" as SDL3
+use SDL3.Renderer
+
+// ==================== 常量（constants.py） ====================
+
+export const int SW = 800
+export const int SH = 600
+export const int GROUND_HEIGHT = 538              // SCREEN_HEIGHT - 62
+export const float SIZE_MULT = 2.5                  // SIZE_MULTIPLIER
+export const float BRICK_MULT = 2.69                // BRICK_SIZE_MULTIPLIER
+export const float BG_MULT = 2.679                  // BACKGROUND_MULTIPLER
+
+// MARIO FORCES
+export const float WALK_ACCEL = 0.15
+export const float RUN_ACCEL = 0.5                  // ★ 原版写的是 20（配合 MAX_RUN_SPEED=800）——那样按住跑键
+export const float RUN_SPEED = 12.0                 //   一帧就能瞬移几百像素、穿过一切（正是"碰撞失灵"的根源）。
+export const float SMALL_TURNAROUND = 0.35          //   这里按 NES 的"跑 = 走 ×2"取 12 / 0.5：跑得明显快，
+export const float GRAVITY = 1.01                   //   又远小于砖块(43px)、敌人(40px)的尺寸 ⇒ 不会穿模。
+export const float JUMP_GRAVITY = 0.31
+export const float JUMP_VEL = -10.0
+export const float FAST_JUMP_VEL = -12.5
+export const float MAX_Y_VEL = 11.0
+export const float MAX_WALK_SPEED = 6.0
+
+// 马里奥状态
+export const int ST_STAND = 0
+export const int ST_WALK = 1
+export const int ST_JUMP = 2
+export const int ST_FALL = 3
+export const int ST_SMALLTOBIG = 5
+export const int ST_BIGTOFIRE = 6
+export const int ST_BIGTOSMALL = 7
+export const int ST_FLAGPOLE = 8
+export const int ST_BOTTOMPOLE = 9
+export const int ST_TOCASTLE = 10
+export const int ST_ENDFALL = 11
+export const int ST_DEATHJUMP = 4
+
+// 敌人状态
+export const int ES_WALK = 0
+export const int ES_FALL = 1
+export const int ES_JUMPEDON = 2
+export const int ES_SHELLSLIDE = 3
+export const int ES_DEATHJUMP = 4
+
+// 道具状态
+export const int PS_REVEAL = 0
+export const int PS_SLIDE = 1
+export const int PS_FALL = 2
+export const int PS_RESTING = 3
+export const int PS_BOUNCE = 4
+export const int PS_FLYING = 5
+export const int PS_BOUNCING = 6
+export const int PS_EXPLODING = 7
+
+// 箱子 / 砖块状态
+export const int BS_RESTING = 0
+export const int BS_BUMPED = 1
+export const int BS_OPENED = 2
+
+// 箱内容
+export const int CT_NONE = 0
+export const int CT_COIN = 1
+export const int CT_MUSHROOM = 2
+export const int CT_FIREFLOWER = 3
+export const int CT_STAR = 4
+export const int CT_SIXCOINS = 5
+export const int CT_LIFE = 6
+
+// 道具种类
+export const int PK_MUSHROOM = 0
+export const int PK_FIREFLOWER = 1
+export const int PK_STAR = 2
+export const int PK_LIFE = 3
+export const int PK_FIREBALL = 4
+
+// 敌人种类
+export const int EK_GOOMBA = 0
+export const int EK_KOOPA = 1
+
+// 关卡状态
+export const int LS_NOTFROZEN = 0
+export const int LS_FROZEN = 1
+export const int LS_CASTLE = 2
+export const int LS_FIREWORKS = 3
+
+// 游戏状态
+export const int GS_MENU = 0
+export const int GS_PLAY = 1
+export const int GS_OVER = 2
+export const int GS_CLEAR = 3
+
+export const int MAX_LEVEL = 4             // 共 1-1 ~ 1-4 关
+
+// 地下金币房（1-1 高水管 ↓ 进入）
+export const float ROOM_W = 900.0                  // 房间宽度（地面铺满，相机夹紧也用它）
+export const float ROOM_FLOOR_Y = 538.0            // 房间地面高度：与主关卡一致 ⇒ 物理完全不用改
+export const float ROOM_PIPE_W = 83.0
+export const float ROOM_PIPE_H = 86.0              // 房间里两根水管只有 86 高 ⇒ 一跳就能站上去（172 高是跳不上去的）
+export const float ROOM_PIPE_TOP = 452.0           // 房间水管顶（452 = 538 - 86）
+export const float LEVEL1_PIPE_TOP = 366.0         // 1-1 里那根高水管的顶（进入点 / 出来点都在这）
+export const float ROOM_ENTRY_X = 40.0             // 房间里的入口水管
+export const float ROOM_EXIT_X = 620.0             // 房间里的出口水管
+export const float ROOM_WALL_X = 745.0             // 右端砖墙（挡住马里奥，别掉出房间）
+export const float LEVEL1_ENTRY_PIPE = 1973.0      // 1-1 里唯一能钻的那根高水管
+export const float LEVEL1_RETURN_PIPE = 2445.0     // 出来时站到 1-1 的下一根水管顶上
+export const float LEVEL_WIDTH = 9087.0            // 关卡总长（相机夹紧用；进金币房时会临时改成房间宽）
+export const float WARP_SINK_FRAMES = 30.0         // 钻管子下沉动画帧数
+// 旗杆底座（addEndCheckpoints 前那块 addSolid(8488,495,40,40)）的顶面高度：
+// 滑杆收尾要正好贴到这个高度，否则会被底座侧面挡住、走不到城堡（见 marioFlagSlide）
+export const float POLE_BASE_TOP = 495.0
+
+
+// ==================== 工具（原 super_mario.leno「工具」段） ====================
+
+// ==================== 工具 ====================
+
+export func ovl(float ax, float ay, float aw, float ah, float bx, float by, float bw, float bh): bool {
+    return ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by
+}
+
+// 画精灵：sx/sy/sw/sh 为源矩形；flipH/flipV 用负宽高实现（SDL_RenderTexture 支持）
+export func drawSpr(Renderer r, Ptr[u8] tex, int sx, int sy, int sw, int sh,
+             float dx, float dy, float dw, float dh, bool flipH, bool flipV) {
+    if tex == null { return }
+    if sw <= 0 or sh <= 0 { return }
+    // ★ 翻转只能用"负的目标宽/高"：这套 SDL3 里负的**源**宽高会整块画不出来
+    //   （马里奥朝左就消失就是这个坑），实测负 dst 才是镜像 ✓
+    float ddx = dx
+    float ddy = dy
+    float ddw = dw
+    float ddh = dh
+    if flipH { ddx = dx + dw; ddw = 0.0 - dw }
+    if flipV { ddy = dy + dh; ddh = 0.0 - dh }
+    r.drawTextureFromTo(tex, _float(sx), _float(sy), _float(sw), _float(sh), ddx, ddy, ddw, ddh)
+}
+
+export func drawFrame(Renderer r, Ptr[u8] tex, Array[int] a, int idx,
+               float dx, float dy, float scale, bool flipH, bool flipV) {
+    if a.len() < 4 { return }
+    int n = a.len() / 4
+    if idx < 0 { idx = 0 }
+    if idx >= n { idx = idx - (idx / n) * n }
+    int o = idx * 4
+    drawSpr(r, tex, a[o], a[o+1], a[o+2], a[o+3], dx, dy,
+            _float(a[o+2]) * scale, _float(a[o+3]) * scale, flipH, flipV)
+}
+
+export func pad6(int v): string {
+    string s = _str(v)
+    while s.len() < 6 { s = "0" + s }
+    return s
+}
+
+export func pad3(int v): string {
+    string s = _str(v)
+    while s.len() < 3 { s = "0" + s }
+    return s
+}
+
+export func pad2(int v): string {
+    string s = _str(v)
+    while s.len() < 2 { s = "0" + s }
+    return s
+}
+

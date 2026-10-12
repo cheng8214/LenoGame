@@ -1,0 +1,393 @@
+// sm_render.leno — 渲染（贴图 + 全部绘制 / HUD / 菜单）
+//
+// 拆自 super_mario.leno（2026-10-12 拆分）。跨模块约定：
+//   · 函数：use 模块.(函数名) ⇒ 直接调用，可省前缀
+//   · 常量：跨模块只能用 模块.X 访问 ⇒ 文件头用 const 起别名，正文写法与拆分前一致
+//   · 状态：不共享全局，一律显式收 Game g（沿用 LenoMusic 应用的"结构体 + 传参"写法）
+
+import "SDL3" as SDL3
+use SDL3.(Renderer, Font, Flip, ScaleMode)
+import dirs
+import "sm_types.leno" as types
+use types.(Mario, Brick, CoinBox, Enemy, Powerup, Coin, Piece, ScorePop, Game)
+import "sm_util.leno" as u
+use u.(drawSpr, drawFrame, pad6, pad3, pad2)
+import "sm_mario.leno" as mario
+use mario.(MFrame, marioFrame, marioAlpha)
+
+// ---- 常量别名（单一数据源在 sm_util.leno） ----
+const int SW = u.SW
+const int SH = u.SH
+const float SIZE_MULT = u.SIZE_MULT
+const float BRICK_MULT = u.BRICK_MULT
+const float BG_MULT = u.BG_MULT
+const int ES_DEATHJUMP = u.ES_DEATHJUMP
+const int PS_EXPLODING = u.PS_EXPLODING
+const int PK_MUSHROOM = u.PK_MUSHROOM
+const int PK_FIREFLOWER = u.PK_FIREFLOWER
+const int PK_STAR = u.PK_STAR
+const int PK_LIFE = u.PK_LIFE
+const int PK_FIREBALL = u.PK_FIREBALL
+const int EK_GOOMBA = u.EK_GOOMBA
+const int GS_MENU = u.GS_MENU
+const int GS_OVER = u.GS_OVER
+const int GS_CLEAR = u.GS_CLEAR
+const int MAX_LEVEL = u.MAX_LEVEL
+const float ROOM_W = u.ROOM_W
+const float ROOM_FLOOR_Y = u.ROOM_FLOOR_Y
+const float ROOM_PIPE_W = u.ROOM_PIPE_W
+const float ROOM_PIPE_H = u.ROOM_PIPE_H
+const float ROOM_PIPE_TOP = u.ROOM_PIPE_TOP
+const float LEVEL1_PIPE_TOP = u.LEVEL1_PIPE_TOP
+const float ROOM_ENTRY_X = u.ROOM_ENTRY_X
+const float ROOM_EXIT_X = u.ROOM_EXIT_X
+const float ROOM_WALL_X = u.ROOM_WALL_X
+const float LEVEL1_ENTRY_PIPE = u.LEVEL1_ENTRY_PIPE
+
+// ==================== 渲染 ====================
+
+// 从关卡背景图里"切"一块画到屏幕上：金币房的地面/水管直接复用背景图里的画，
+// 风格与主关卡 100% 一致，也不用额外美术资源
+export func drawBgPiece(Renderer r, float wx, float wy, float w, float h,
+                 float dx, float dy, float dw, float dh) {
+    r.drawTextureFromTo(T_BG, wx / BG_MULT, wy / BG_MULT, w / BG_MULT, h / BG_MULT, dx, dy, dw, dh)
+}
+
+export func renderCoinRoom(Game g, Renderer r) {
+    float cx = g.viewport_x
+    // 地面：整条切背景图的地面（同尺寸 ⇒ 不缩放、不变形）
+    drawBgPiece(r, 0.0, ROOM_FLOOR_Y, ROOM_W, 60.0, 0.0 - cx, ROOM_FLOOR_Y, ROOM_W, 60.0)
+    // 两根水管：切 1-1 那根高水管的画（只取上面 86px = 管口 + 一段管身 ⇒ 接到地面正好）
+    drawBgPiece(r, LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H,
+                ROOM_ENTRY_X - cx, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
+    drawBgPiece(r, LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H,
+                ROOM_EXIT_X - cx, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
+    // 右端砖墙
+    float wy = 98.0
+    while wy < ROOM_FLOOR_Y - 2.0 {
+        float wx2 = ROOM_WALL_X
+        while wx2 < ROOM_W - 20.0 {
+            drawFrame(r, T_TILE, F_BRICK, 0, wx2 - cx, wy, BRICK_MULT, false, false)
+            wx2 = wx2 + 43.0
+        }
+        wy = wy + 43.0
+    }
+    // 房间金币
+    for 0:g.room_coins.len() - 1 to i {
+        Coin c = g.room_coins[i]
+        if not c.active { continue }
+        drawFrame(r, T_ITEM, F_COIN, c.frame_index, c.x - cx, c.y, SIZE_MULT, false, false)
+    }
+}
+
+export func renderFlagpole(Game g, Renderer r) {
+    float cx = g.viewport_x
+    drawSpr(r, T_TILE, 228, 120, 8, 8, g.flag_x + 2.0 - cx, 97.0 - 8.0, 8.0 * SIZE_MULT, 8.0 * SIZE_MULT, false, false)
+    for 0:9 to i {
+        float py = 97.0 + _float(i) * 40.0
+        if i == 9 { py = 450.0 }
+        drawSpr(r, T_TILE, 263, 144, 2, 16, g.flag_x - cx, py, 2.0 * BRICK_MULT, 16.0 * BRICK_MULT, false, false)
+    }
+    drawSpr(r, T_ITEM, 128, 32, 16, 16, g.flag_x - cx, g.flag_y, 16.0 * BRICK_MULT, 16.0 * BRICK_MULT, false, false)
+    if g.castle_flag_on {
+        drawSpr(r, T_ITEM, 129, 2, 14, 14, 8745.0 - cx, g.castle_flag_y, 14.0 * SIZE_MULT, 14.0 * SIZE_MULT, false, false)
+    }
+}
+
+export func renderBricks(Game g, Renderer r) {
+    float cx = g.viewport_x
+    for 0:g.bricks.len() - 1 to i {
+        Brick b = g.bricks[i]
+        if not b.visible { continue }
+        if b.x + b.w < cx - 40.0 or b.x > cx + SW + 40.0 { continue }
+        int fi = 0
+        if b.frame_index == 1 { fi = 1 }
+        drawFrame(r, T_TILE, F_BRICK, fi, b.x - cx, b.y, BRICK_MULT, false, false)
+    }
+}
+
+export func renderCoinBoxes(Game g, Renderer r) {
+    float cx = g.viewport_x
+    for 0:g.coinboxes.len() - 1 to i {
+        CoinBox c = g.coinboxes[i]
+        if c.x + c.w < cx - 40.0 or c.x > cx + SW + 40.0 { continue }
+        drawFrame(r, T_TILE, F_COINBOX, c.frame_index, c.x - cx, c.y, BRICK_MULT, false, false)
+    }
+}
+
+export func renderCoins(Game g, Renderer r) {
+    float cx = g.viewport_x
+    for 0:g.coins_arr.len() - 1 to i {
+        Coin c = g.coins_arr[i]
+        if not c.active { continue }
+        drawFrame(r, T_ITEM, F_COIN, c.frame_index, c.x - cx, c.y, SIZE_MULT, false, false)
+    }
+}
+
+export func renderPieces(Game g, Renderer r) {
+    float cx = g.viewport_x
+    for 0:g.pieces.len() - 1 to i {
+        Piece p = g.pieces[i]
+        if not p.active { continue }
+        drawFrame(r, T_ITEM, F_PIECE, 0, p.x - cx, p.y, BRICK_MULT, p.flip, false)
+    }
+}
+
+export func renderPowerups(Game g, Renderer r) {
+    float cx = g.viewport_x
+    for 0:g.powerups.len() - 1 to i {
+        Powerup p = g.powerups[i]
+        if not p.active { continue }
+        float dx = p.x - cx
+        if dx < -60.0 or dx > SW + 60.0 { continue }
+        if p.kind == PK_FIREBALL {
+            if p.state == PS_EXPLODING {
+                int fi = p.frame_index - 4
+                if fi < 0 { fi = 0 }
+                if fi > 2 { fi = 2 }
+                drawFrame(r, T_ITEM, F_FBEXP, fi, dx - 10.0, p.y - 10.0, SIZE_MULT, false, false)
+            } else {
+                drawFrame(r, T_ITEM, F_FIREBALL, p.frame_index, dx, p.y, SIZE_MULT, false, false)
+            }
+        } else if p.kind == PK_MUSHROOM {
+            drawFrame(r, T_ITEM, F_MUSHROOM, 0, dx, p.y, SIZE_MULT, false, false)
+        } else if p.kind == PK_LIFE {
+            drawFrame(r, T_ITEM, F_LIFE, 0, dx, p.y, SIZE_MULT, false, false)
+        } else if p.kind == PK_FIREFLOWER {
+            drawFrame(r, T_ITEM, F_FLOWER, p.frame_index, dx, p.y, SIZE_MULT, false, false)
+        } else if p.kind == PK_STAR {
+            drawFrame(r, T_ITEM, F_STAR, p.frame_index, dx, p.y, SIZE_MULT, false, false)
+        }
+    }
+}
+
+export func renderEnemy(Renderer r, Enemy e, float cx) {
+    float dx = e.x - cx
+    if dx < -80.0 or dx > SW + 80.0 { return }
+    if e.kind == EK_GOOMBA {
+        if e.state == ES_DEATHJUMP {
+            drawFrame(r, T_ENEMY, F_GOOMBA, 1, dx, e.y, SIZE_MULT, false, true)
+            return
+        }
+        drawFrame(r, T_ENEMY, F_GOOMBA, e.frame_index, dx, e.y, SIZE_MULT, e.direction == 1, false)
+    } else {
+        if e.state == ES_DEATHJUMP {
+            drawFrame(r, T_ENEMY, F_KOOPA, 2, dx, e.y, SIZE_MULT, false, true)
+            return
+        }
+        drawFrame(r, T_ENEMY, F_KOOPA, e.frame_index, dx, e.y, SIZE_MULT, e.direction == 1, false)
+    }
+}
+
+export func renderEnemies(Game g, Renderer r) {
+    float cx = g.viewport_x
+    for 0:g.enemies.len() - 1 to i {
+        Enemy e = g.enemies[i]
+        if e.active { renderEnemy(r, e, cx) }
+    }
+    for 0:g.shells.len() - 1 to i {
+        Enemy e = g.shells[i]
+        if e.active { renderEnemy(r, e, cx) }
+    }
+    for 0:g.dying.len() - 1 to i {
+        Enemy e = g.dying[i]
+        if e.active { renderEnemy(r, e, cx) }
+    }
+}
+
+export func renderMario(Game g, Renderer r) {
+    Mario m = g.mario
+    if m.in_castle { return }
+    MFrame mf = marioFrame(g, m)          // 帧表 + 帧号一起取（原先是 marioFrames + 侧带 var g_frame_idx）
+    Array[int] a = mf.frames
+    int idx = mf.idx
+    float alpha = marioAlpha(g, m)
+    if m.hurt_invincible and alpha == 0.0 { return }
+    // ★ 精灵在碰撞框内"水平居中 + 脚底对齐框底"：
+    //   走动帧 40 宽 = 框宽（严丝合缝）；站定帧只有 30 宽 ⇒ 左右各留 5px。
+    //   这样"身体"永远贴在框内，不会再出现"顶到水管/砖块却看着陷进去"的错位。
+    if a.len() < 4 { return }
+    int nn = a.len() / 4
+    int fi = idx
+    if fi < 0 { fi = 0 }
+    if fi >= nn { fi = fi - (fi / nn) * nn }
+    float fw = _float(a[fi * 4 + 2]) * SIZE_MULT
+    float fh = _float(a[fi * 4 + 3]) * SIZE_MULT
+    drawFrame(r, T_MARIO, a, idx, m.x - g.viewport_x + (m.w - fw) * 0.5, m.y + (m.h - fh),
+              SIZE_MULT, not m.facing_right, false)
+}
+
+export func renderHud(Game g, Renderer r) {
+    if not g.fontSmall.ok { return }
+    Font f = g.fontSmall
+    r.drawText(f, "MARIO", 30.0, 8.0, #FFFFFFFF)
+    r.drawText(f, pad6(g.score), 30.0, 28.0, #FFFFFFFF)
+    r.drawText(f, "x" + pad2(g.coins), 290.0, 28.0, #FFFFFFFF)
+    r.drawText(f, "WORLD", 470.0, 8.0, #FFFFFFFF)
+    r.drawText(f, "1-" + _str(g.level), 482.0, 28.0, #FFFFFFFF)
+    r.drawText(f, "TIME", 650.0, 8.0, #FFFFFFFF)
+    r.drawText(f, pad3(g.time), 655.0, 28.0, #FFFFFFFF)
+    r.drawText(f, "LIVES " + _str(g.lives), 30.0, 50.0, #FFCCCCFF)
+}
+
+export func renderPops(Game g, Renderer r) {
+    if not g.fontSmall.ok { return }
+    for 0:g.pops.len() - 1 to i {
+        ScorePop s = g.pops[i]
+        if not s.active { continue }
+        r.drawText(g.fontSmall, s.text, s.x, s.y, #FFFFFFFF)
+    }
+}
+
+export func renderGame(Game g, Renderer r) {
+    r.setColorFloat(0.0, 0.0, 0.0, 1.0)
+    r.clear()
+    if g.state == GS_MENU {
+        renderFlagpole(g, r)
+        renderHud(g, r)
+        r.setColorFloat(0.0, 0.0, 0.0, 0.6)
+        r.fillRect(0.0, 0.0, _float(SW), _float(SH))
+        if g.font.ok {
+            r.drawTextCentered(g.font, "超级玛丽 1-1 ~ 1-4", 0.0, _float(SW), 200.0, #FFFFFFFF)
+            r.drawTextCentered(g.font, "← → 移动    A / 空格 跳跃", 0.0, _float(SW), 300.0, #DDDDDDFF)
+            r.drawTextCentered(g.font, "S / Shift 加速跑（火球键）    ↓ 蹲下", 0.0, _float(SW), 330.0, #DDDDDDFF)
+            if (_int(g.now / 500.0) - (_int(g.now / 500.0) / 2) * 2) == 0 {
+                r.drawTextCentered(g.font, "按 回车 开始", 0.0, _float(SW), 420.0, #FFD700FF)
+            }
+        }
+        SDL3.requestRedraw()
+        return
+    }
+
+    if g.in_room {
+        // 地下金币房：黑底 + 用背景图切片拼出的地面/水管/砖墙 + 房间金币
+        renderCoinRoom(g, r)
+    } else {
+        // 背景（level_1.png 按 BG_MULT 放大后取视口）
+        r.drawTextureFromTo(T_BG, g.viewport_x / BG_MULT, 0.0, _float(SW) / BG_MULT, _float(SH) / BG_MULT,
+                            0.0, 0.0, _float(SW), _float(SH))
+
+        // 1-4 是"城堡终章"：压一层暗色，做出城堡内部的感觉
+        if g.level == 4 {
+            r.setColorFloat(0.05, 0.03, 0.16, 0.55)
+            r.fillRect(0.0, 0.0, _float(SW), _float(SH))
+        }
+    }
+
+    renderPowerups(g, r)
+    renderCoins(g, r)
+    renderBricks(g, r)
+    renderCoinBoxes(g, r)
+    renderPieces(g, r)
+    renderFlagpole(g, r)
+    renderEnemies(g, r)
+    renderMario(g, r)
+    // 钻水管：把管口的画再盖一次 → 马里奥看起来就是"钻进管子里"（否则会盯着他从管子前面滑下去 ✗）
+    if g.warp_kind == 1 and not g.in_room {
+        drawBgPiece(r, LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_FLOOR_Y - LEVEL1_PIPE_TOP,
+                    LEVEL1_ENTRY_PIPE - g.viewport_x, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_FLOOR_Y - LEVEL1_PIPE_TOP)
+    } else if g.warp_kind == 2 and g.in_room {
+        drawBgPiece(r, LEVEL1_ENTRY_PIPE, LEVEL1_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H,
+                    ROOM_EXIT_X - g.viewport_x, ROOM_PIPE_TOP, ROOM_PIPE_W, ROOM_PIPE_H)
+    }
+    renderHud(g, r)
+    renderPops(g, r)
+
+    // 开场横幅 "1-N"
+    if g.banner_timer > 0.0 {
+        r.setColorFloat(0.0, 0.0, 0.0, 0.55)
+        r.fillRect(0.0, 210.0, _float(SW), 80.0)
+        if g.font.ok {
+            r.drawTextCentered(g.font, "WORLD 1-" + _str(g.level), 0.0, _float(SW), 226.0, #FFFFFFFF)
+        }
+        if g.fontSmall.ok {
+            r.drawTextCentered(g.fontSmall, "LEVEL 1-" + _str(g.level) + " / " + _str(MAX_LEVEL), 0.0, _float(SW), 258.0, #DDDDDDFF)
+        }
+    }
+
+    if g.state == GS_OVER {
+        r.setColorFloat(0.0, 0.0, 0.0, 0.7)
+        r.fillRect(0.0, 0.0, _float(SW), _float(SH))
+        if g.font.ok {
+            r.drawTextCentered(g.font, "GAME OVER", 0.0, _float(SW), 250.0, #FF4444FF)
+            r.drawTextCentered(g.font, "最终得分 " + _str(g.score), 0.0, _float(SW), 310.0, #FFFFFFFF)
+            if (_int(g.now / 500.0) - (_int(g.now / 500.0) / 2) * 2) == 0 {
+                r.drawTextCentered(g.font, "按 回车 重新开始", 0.0, _float(SW), 380.0, #FFD700FF)
+            }
+        }
+    } else if g.state == GS_CLEAR {
+        r.setColorFloat(0.0, 0.0, 0.0, 0.7)
+        r.fillRect(0.0, 0.0, _float(SW), _float(SH))
+        if g.font.ok {
+            r.drawTextCentered(g.font, "恭喜通关！四关全清", 0.0, _float(SW), 230.0, #FFD700FF)
+            r.drawTextCentered(g.font, "得分 " + _str(g.score), 0.0, _float(SW), 290.0, #FFFFFFFF)
+            if (_int(g.now / 500.0) - (_int(g.now / 500.0) / 2) * 2) == 0 {
+                r.drawTextCentered(g.font, "按 回车 再玩一次", 0.0, _float(SW), 360.0, #FFFFFFFF)
+            }
+        }
+    }
+    SDL3.requestRedraw()
+}
+
+
+// ==================== 贴图（模块私有：只有本模块画图，不需要跨文件共享） ====================
+
+Ptr[u8] T_BG = null
+Ptr[u8] T_MARIO = null
+Ptr[u8] T_ENEMY = null
+Ptr[u8] T_ITEM = null
+Ptr[u8] T_TILE = null
+
+// 把贴图缩放模式改回 NEAREST（像素画专用）——走 SDL3 模块新导出的 setTextureScaleMode
+export func texNearest(Ptr[u8] tex) {
+    if tex == null { return }
+    SDL3.setTextureScaleMode(tex, ScaleMode.NEAREST)
+}
+
+export func loadTextures(Ptr[u8] ren) {
+    string base = dirs.res_dir()
+    T_BG = SDL3.loadImageTexture(ren, base + "/image/level_1.png")
+    T_MARIO = SDL3.loadImageTexture(ren, base + "/image/mario_bros.png")
+    T_ENEMY = SDL3.loadImageTexture(ren, base + "/image/smb_enemies_sheet.png")
+    T_ITEM = SDL3.loadImageTexture(ren, base + "/image/item_objects.png")
+    T_TILE = SDL3.loadImageTexture(ren, base + "/image/tile_set.png")
+    // ★ 像素画必须用 NEAREST 缩放：SDL3 模块的 loadImageTexture 默认设成 LINEAR，
+    //   精灵图四周那些"A=0 但带颜色"的像素会被双线性插值掺进来，
+    //   放大 2.5 倍后就是一圈白/脏边的"描边"（马里奥看着有白边就是这个原因）
+    texNearest(T_BG)
+    texNearest(T_MARIO)
+    texNearest(T_ENEMY)
+    texNearest(T_ITEM)
+    texNearest(T_TILE)
+    if T_BG == null { print("[警告] level_1.png 加载失败") }
+    if T_MARIO == null { print("[警告] mario_bros.png 加载失败") }
+    if T_ENEMY == null { print("[警告] smb_enemies_sheet.png 加载失败") }
+    if T_ITEM == null { print("[警告] item_objects.png 加载失败") }
+    if T_TILE == null { print("[警告] tile_set.png 加载失败") }
+}
+// ==================== 敌方 / 物品 / 图块帧表 ====================
+
+// smb_enemies_sheet.png
+var F_GOOMBA = [0,4,16,16, 30,4,16,16, 61,0,16,16, 30,4,16,16]     // 帧 3 = 帧 1 垂直翻转
+var F_KOOPA  = [150,0,16,24, 180,0,16,24, 360,5,16,15, 360,5,16,15] // 帧 3 = 帧 2 垂直翻转
+
+// item_objects.png
+var F_MUSHROOM = [0,0,16,16]
+var F_LIFE = [16,0,16,16]
+var F_FLOWER = [0,32,16,16, 16,32,16,16, 32,32,16,16, 48,32,16,16]
+var F_STAR = [1,48,15,16, 17,48,15,16, 33,48,15,16, 49,48,15,16]
+var F_COIN = [52,113,8,14, 4,113,8,14, 20,113,8,14, 36,113,8,14]
+var F_FIREBALL = [96,144,8,8, 104,144,8,8, 96,152,8,8, 104,152,8,8]
+var F_FBEXP = [112,144,16,16, 112,160,16,16, 112,176,16,16]
+var F_PIECE = [68,20,8,8]
+var F_FLAG = [128,32,16,16]                 // 旗杆上的旗
+var F_CASTLEFLAG = [129,2,14,14]            // 城堡上的旗
+
+// tile_set.png
+var F_BRICK = [16,0,16,16, 432,0,16,16]
+var F_COINBOX = [384,0,16,16, 400,0,16,16, 416,0,16,16, 432,0,16,16]
+var F_POLE = [263,144,2,16]
+var F_FINIAL = [228,120,8,8]
+
+// 数据结构见 sm_types.leno（import/use 在文件顶部）
+

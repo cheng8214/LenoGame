@@ -4,7 +4,9 @@
 //   import "sm_types.leno" as types
 //   use types.(Mario, Box, Brick, CoinBox, Enemy, Powerup, Coin, Piece, ScorePop, Checkpoint, Keys, Game)
 //
-// 注意：这里只放 struct；常量、关卡数据、逻辑、渲染都在 super_mario.leno 里。
+// 注意：这里只放 struct。常量/工具在 sm_util.leno，关卡数据在 sm_level.leno，
+//       逻辑按域拆在 sm_mario / sm_items / sm_room / sm_render / sm_audio，
+//       每帧流程与入口在 super_mario.leno（文件头有完整的拆分说明与跨模块约定）。
 
 import "SDL3" as SDL3
 use SDL3.Font
@@ -95,6 +97,9 @@ export struct Game {
     int state = 0, level_state = 0
     int level = 1                 // 当前关卡（1-1 ~ 1-MAX_LEVEL）
     float viewport_x = 0, level_w = 9087
+    // 当前时间戳（毫秒，主循环每帧写一次）：拆分前是模块级 var NOW，
+    // 拆模块后不能用跨文件全局 ⇒ 收进 Game，各模块统一读 g.now（每帧快照语义不变）
+    float now = 0
     int score = 0, coins = 0, lives = 3, time = 400
     float time_timer = 0, frame = 0
     float camera_start_x = 0

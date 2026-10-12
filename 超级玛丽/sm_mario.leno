@@ -1,0 +1,885 @@
+// sm_mario.leno — 马里奥帧表 / 状态机 / 碰撞
+//
+// 拆自 super_mario.leno（2026-10-12 拆分）。跨模块约定：
+//   · 函数：use 模块.(函数名) ⇒ 直接调用，可省前缀
+//   · 常量：跨模块只能用 模块.X 访问 ⇒ 文件头用 const 起别名，正文写法与拆分前一致
+//   · 状态：不共享全局，一律显式收 Game g（沿用 LenoMusic 应用的"结构体 + 传参"写法）
+
+import "sm_types.leno" as types
+use types.(Mario, Box, Brick, CoinBox, Enemy, Powerup, Game)
+import "sm_util.leno" as u
+import "sm_items.leno" as it
+use it.(findSolid, findBrick, findCoinBox, findEnemy, findShell, findPowerup, addScore, addScoreOneUp, spawnPieces, checkEnemyOnBrick, brickStartBump, coinBoxStartBump)
+import "sm_audio.leno" as aud
+use aud.(setMusic, stopMusic, stopInvincibleMusic, playDeathJingle, playInvincibleMusic, playJump, playStomp, playKick, playCoin, playBump, playPowerup, playPipe, playFireball, playOneUp, playBrickSmash)
+
+// ---- 常量别名（单一数据源在 sm_util.leno） ----
+const float WALK_ACCEL = u.WALK_ACCEL
+const float RUN_ACCEL = u.RUN_ACCEL
+const float RUN_SPEED = u.RUN_SPEED
+const float SMALL_TURNAROUND = u.SMALL_TURNAROUND
+const float GRAVITY = u.GRAVITY
+const float JUMP_GRAVITY = u.JUMP_GRAVITY
+const float JUMP_VEL = u.JUMP_VEL
+const float FAST_JUMP_VEL = u.FAST_JUMP_VEL
+const float MAX_Y_VEL = u.MAX_Y_VEL
+const float MAX_WALK_SPEED = u.MAX_WALK_SPEED
+const int ST_STAND = u.ST_STAND
+const int ST_WALK = u.ST_WALK
+const int ST_JUMP = u.ST_JUMP
+const int ST_FALL = u.ST_FALL
+const int ST_SMALLTOBIG = u.ST_SMALLTOBIG
+const int ST_BIGTOFIRE = u.ST_BIGTOFIRE
+const int ST_BIGTOSMALL = u.ST_BIGTOSMALL
+const int ST_FLAGPOLE = u.ST_FLAGPOLE
+const int ST_BOTTOMPOLE = u.ST_BOTTOMPOLE
+const int ST_TOCASTLE = u.ST_TOCASTLE
+const int ST_ENDFALL = u.ST_ENDFALL
+const int ST_DEATHJUMP = u.ST_DEATHJUMP
+const int ES_JUMPEDON = u.ES_JUMPEDON
+const int ES_SHELLSLIDE = u.ES_SHELLSLIDE
+const int ES_DEATHJUMP = u.ES_DEATHJUMP
+const int PS_FLYING = u.PS_FLYING
+const int BS_RESTING = u.BS_RESTING
+const int BS_OPENED = u.BS_OPENED
+const int CT_NONE = u.CT_NONE
+const int CT_COIN = u.CT_COIN
+const int CT_MUSHROOM = u.CT_MUSHROOM
+const int CT_FIREFLOWER = u.CT_FIREFLOWER
+const int PK_MUSHROOM = u.PK_MUSHROOM
+const int PK_FIREFLOWER = u.PK_FIREFLOWER
+const int PK_STAR = u.PK_STAR
+const int PK_LIFE = u.PK_LIFE
+const int PK_FIREBALL = u.PK_FIREBALL
+const int EK_GOOMBA = u.EK_GOOMBA
+const int LS_FROZEN = u.LS_FROZEN
+const float POLE_BASE_TOP = u.POLE_BASE_TOP
+
+// ==================== 马里奥帧表（mario_bros.png） ====================
+
+// 当前帧表 + 帧号：原来 marioFrames() 用模块级 var g_frame_idx **侧带**出帧号，
+// 拆模块后渲染端（sm_render / 入口）拿不到那个 var ⇒ 打包成一个结构体返回。
+export struct MFrame { Array[int] frames = []; int idx = 0 }
+
+// mario_bros.png —— 小马里奥（右向）
+var M_SMALL = [178,32,12,16, 80,32,15,16, 96,32,16,16, 112,32,16,16, 144,32,16,16,
+               130,32,14,16, 160,32,15,16, 320,8,16,24, 241,33,16,16, 194,32,12,16, 210,33,12,16]
+// 绿色 / 红色 / 黑色小马里奥（无敌闪烁）
+var M_SMALL_G = [178,224,12,16, 80,224,15,16, 96,224,16,16, 112,224,15,16, 144,224,16,16, 130,224,14,16]
+var M_SMALL_R = [178,272,12,16, 80,272,15,16, 96,272,16,16, 112,272,15,16, 144,272,16,16, 130,272,14,16]
+var M_SMALL_K = [178,176,12,16, 80,176,15,16, 96,176,16,16, 112,176,15,16, 144,176,16,16, 130,176,14,16]
+// 大马里奥
+var M_BIG = [176,0,16,32, 81,0,16,32, 97,0,15,32, 113,0,15,32, 144,0,16,32,
+             128,0,16,32, 336,0,16,32, 160,10,16,22, 272,2,16,29, 193,2,16,30, 209,2,16,29]
+var M_BIG_G = [176,192,16,32, 81,192,16,32, 97,192,15,32, 113,192,15,32, 144,192,16,32,
+               128,192,16,32, 336,192,16,32, 160,202,16,22]
+var M_BIG_R = [176,240,16,32, 81,240,16,32, 97,240,15,32, 113,240,15,32, 144,240,16,32,
+               128,240,16,32, 336,240,16,32, 160,250,16,22]
+var M_BIG_K = [176,144,16,32, 81,144,16,32, 97,144,15,32, 113,144,15,32, 144,144,16,32,
+               128,144,16,32, 336,144,16,32, 160,154,16,22]
+// 火球马里奥
+var M_FIRE = [176,48,16,32, 81,48,16,32, 97,48,15,32, 113,48,15,32, 144,48,16,32,
+              128,48,16,32, 336,48,16,32, 160,58,16,22, 0,0,0,0, 193,50,16,29, 209,50,16,29]
+
+
+// ==================== 马里奥帧（mario.py） ====================
+
+// 无敌时用哪套色表
+export func tintFrames(Mario m): Array[int] {
+    if m.big {
+        if m.frame_tint == 1 { return M_BIG_G }
+        if m.frame_tint == 2 { return M_BIG_R }
+        if m.frame_tint == 3 { return M_BIG_K }
+        return M_BIG
+    }
+    if m.frame_tint == 1 { return M_SMALL_G }
+    if m.frame_tint == 2 { return M_SMALL_R }
+    if m.frame_tint == 3 { return M_SMALL_K }
+    return M_SMALL
+}
+
+// 当前应画的帧表 + 帧号（返回数组，帧号放 g.frame_tmp）
+var g_frame_idx = 0
+
+export func marioFrames(Game g, Mario m): Array[int] {
+    g_frame_idx = m.frame_index
+    if m.state == ST_DEATHJUMP {
+        g_frame_idx = 6
+        if m.big { return M_BIG }
+        return M_SMALL
+    }
+    if m.state == ST_SMALLTOBIG {
+        float d = g.now - m.transition_timer
+        if d < 135.0 { g_frame_idx = 0; return M_SMALL }
+        if d < 200.0 { g_frame_idx = 7; return M_SMALL }
+        if d < 365.0 { g_frame_idx = 0; return M_SMALL }
+        if d < 430.0 { g_frame_idx = 7; return M_SMALL }
+        if d < 495.0 { g_frame_idx = 0; return M_SMALL }
+        if d < 560.0 { g_frame_idx = 7; return M_SMALL }
+        if d < 625.0 { g_frame_idx = 0; return M_BIG }
+        if d < 690.0 { g_frame_idx = 0; return M_SMALL }
+        if d < 755.0 { g_frame_idx = 7; return M_SMALL }
+        if d < 820.0 { g_frame_idx = 0; return M_BIG }
+        if d < 885.0 { g_frame_idx = 0; return M_SMALL }
+        g_frame_idx = 0
+        return M_BIG
+    }
+    if m.state == ST_BIGTOFIRE {
+        float d = g.now - m.fire_timer
+        int k = _int(d / 65.0)
+        int pick = k - (k / 4) * 4        // 0..3 循环
+        g_frame_idx = 3
+        if pick == 0 { return M_FIRE }
+        if pick == 1 { return M_BIG_G }
+        if pick == 2 { return M_BIG_R }
+        return M_BIG_K
+    }
+    if m.state == ST_BIGTOSMALL {
+        float d = g.now - m.transition_timer
+        if d < 265.0 { g_frame_idx = 4; return M_BIG }
+        int k = _int((d - 265.0) / 65.0)
+        int pick = k - (k / 2) * 2
+        if pick == 0 { g_frame_idx = 8; return M_BIG }
+        g_frame_idx = 8
+        return M_SMALL
+    }
+    if m.state == ST_FLAGPOLE {
+        float d = g.now - m.flag_timer
+        if d < 65.0 { g_frame_idx = 9 } else { g_frame_idx = 10 }
+        return M_SMALL
+    }
+    if m.state == ST_BOTTOMPOLE {
+        g_frame_idx = 10
+        return M_SMALL
+    }
+    if m.crouching and m.big {
+        g_frame_idx = 7
+        if m.fire { return M_FIRE }      // 火焰马里奥的蹲下帧在 M_FIRE[7]
+        return M_BIG
+    }
+    if m.invincible { return tintFrames(m) }
+    if m.fire { return M_FIRE }
+    if m.big { return M_BIG }
+    return M_SMALL
+}
+
+// 掉血闪烁：把当前帧整体淡化（Python 用 image.set_alpha）
+export func marioAlpha(Game g, Mario m): float {
+    if m.hurt_invincible {
+        if m.hurt_timer == 0.0 { return 255.0 }
+        float d = g.now - m.hurt_timer
+        if d < 35.0 { return 0.0 }
+        m.hurt_timer = g.now
+        return 255.0
+    }
+    return 255.0
+}
+
+// ==================== 马里奥状态机（mario.py） ====================
+
+// 渲染入口：一次拿齐"帧表 + 帧号"（原来渲染端直接读模块级 g_frame_idx，现在打包返回）
+export func marioFrame(Game g, Mario m): MFrame {
+    MFrame r = new MFrame()
+    r.frames = marioFrames(g, m)
+    r.idx = g_frame_idx
+    return r
+}
+
+export func checkAllowJump(Game g, Mario m) {
+    if not g.K.jump { m.allow_jump = true }
+}
+
+export func checkAllowFireball(Game g, Mario m) {
+    if not g.K.action { m.allow_fireball = true }
+}
+
+export func countFireballs(Game g): int {
+    int n = 0
+    for g.powerups to p { if p.kind == PK_FIREBALL { n = n + 1 } }
+    return n
+}
+
+export func shootFireball(Game g, Mario m) {
+    playFireball()
+    if (g.now - m.last_fireball) > 200.0 {
+        if countFireballs(g) < 2 {
+            m.allow_fireball = false
+            Powerup p = new Powerup()
+            p.kind = PK_FIREBALL
+            p.w = 20.0; p.h = 20.0
+            p.x = m.x + m.w
+            p.y = m.y + 10.0
+            if m.facing_right { p.direction = 1; p.x_vel = 12.0 } else { p.direction = 0; p.x_vel = -12.0; p.x = m.x }
+            p.y_vel = 10.0
+            p.gravity = 0.9
+            p.state = PS_FLYING
+            p.frame_index = 0
+            p.active = true
+            g.powerups.add(p)
+            m.last_fireball = g.now
+            m.frame_index = 6
+        }
+    }
+}
+
+export func animationSpeed(Mario m): float {
+    if m.x_vel == 0.0 { return 130.0 }
+    if m.x_vel > 0.0 { return 130.0 - (m.x_vel * 13.0) }
+    return 130.0 - (m.x_vel * 13.0 * -1.0)
+}
+
+// 让碰撞框对齐到当前姿态（Python: get_out_of_crouch / adjust_rect / become_*）
+export func setPose(Mario m, bool big) {
+    float bottom = m.y + m.h
+    if big { m.w = 40.0; m.h = 80.0 } else { m.w = 40.0; m.h = 40.0 }
+    m.y = bottom - m.h
+}
+
+export func getOutOfCrouch(Mario m) {
+    if m.crouching {
+        setPose(m, m.big)
+        m.crouching = false
+    }
+}
+
+// 蹲下姿态：对应参考实现的 check_if_crouching()——帧 7 是 16x22 ⇒ 碰撞框 40x55，
+// 且**脚底不动**（left/bottom 保持），所以精灵贴地、不会浮空。
+export func crouchPose(Mario m) {
+    if not m.big { return }
+    float bottom = m.y + m.h
+    m.w = 40.0
+    m.h = 55.0
+    m.y = bottom - m.h
+}
+
+export func marioStanding(Game g, Mario m) {
+    checkAllowJump(g, m)
+    checkAllowFireball(g, m)
+    m.frame_index = 0
+    m.x_vel = 0.0
+    m.y_vel = 0.0
+    if g.K.action and m.fire and m.allow_fireball { shootFireball(g, m) }
+    if g.K.down { m.crouching = true }
+    if g.K.left {
+        m.facing_right = false
+        getOutOfCrouch(m)
+        m.state = ST_WALK
+    } else if g.K.right {
+        m.facing_right = true
+        getOutOfCrouch(m)
+        m.state = ST_WALK
+    } else if g.K.jump {
+        if m.allow_jump {
+            playJump(m.big)
+            m.state = ST_JUMP
+            m.y_vel = JUMP_VEL
+        }
+    } else {
+        m.state = ST_STAND
+    }
+    if not g.K.down { getOutOfCrouch(m) }
+}
+
+export func marioWalking(Game g, Mario m) {
+    checkAllowJump(g, m)
+    checkAllowFireball(g, m)
+    if m.frame_index == 0 {
+        m.frame_index = 1
+        m.walking_timer = g.now
+    } else if (g.now - m.walking_timer) > animationSpeed(m) {
+        if m.frame_index < 3 { m.frame_index = m.frame_index + 1 } else { m.frame_index = 1 }
+        m.walking_timer = g.now
+    }
+    if g.K.action {
+        m.max_x_vel = RUN_SPEED
+        m.x_accel = RUN_ACCEL
+        if m.fire and m.allow_fireball { shootFireball(g, m) }
+    } else {
+        m.max_x_vel = MAX_WALK_SPEED
+        m.x_accel = WALK_ACCEL
+    }
+    if g.K.jump and m.allow_jump {
+        playJump(m.big)
+        m.state = ST_JUMP
+        if m.x_vel > 4.5 or m.x_vel < -4.5 { m.y_vel = FAST_JUMP_VEL } else { m.y_vel = JUMP_VEL }
+        m.allow_jump = false
+    }
+    // ★ 走动中按 ↓ 也进蹲下：原版是"滑铲"（保持惯性减速停住），这里同样按"无方向"处理，
+    //   这样 ↓ 在走/站两种状态下都有反应（参考实现只在 standing() 里设 crouching，手感偏迟钝）
+    if g.K.down {
+        m.crouching = true
+        if m.facing_right {
+            if m.x_vel > 0.0 { m.x_vel = m.x_vel - m.x_accel } else { m.x_vel = 0.0; m.state = ST_STAND }
+        } else {
+            if m.x_vel < 0.0 { m.x_vel = m.x_vel + m.x_accel } else { m.x_vel = 0.0; m.state = ST_STAND }
+        }
+        return
+    }
+    if g.K.left {
+        getOutOfCrouch(m)
+        m.facing_right = false
+        if m.x_vel > 0.0 { m.frame_index = 5; m.x_accel = SMALL_TURNAROUND } else { m.x_accel = WALK_ACCEL }
+        if m.x_vel > (m.max_x_vel * -1.0) {
+            m.x_vel = m.x_vel - m.x_accel
+            if m.x_vel > -0.5 { m.x_vel = -0.5 }
+        } else if m.x_vel < (m.max_x_vel * -1.0) {
+            m.x_vel = m.x_vel + m.x_accel
+        }
+    } else if g.K.right {
+        getOutOfCrouch(m)
+        m.facing_right = true
+        if m.x_vel < 0.0 { m.frame_index = 5; m.x_accel = SMALL_TURNAROUND } else { m.x_accel = WALK_ACCEL }
+        if m.x_vel < m.max_x_vel {
+            m.x_vel = m.x_vel + m.x_accel
+            if m.x_vel < 0.5 { m.x_vel = 0.5 }
+        } else if m.x_vel > m.max_x_vel {
+            m.x_vel = m.x_vel - m.x_accel
+        }
+    } else {
+        if m.facing_right {
+            if m.x_vel > 0.0 { m.x_vel = m.x_vel - m.x_accel } else { m.x_vel = 0.0; m.state = ST_STAND }
+        } else {
+            if m.x_vel < 0.0 { m.x_vel = m.x_vel + m.x_accel } else { m.x_vel = 0.0; m.state = ST_STAND }
+        }
+    }
+}
+
+export func marioJumping(Game g, Mario m) {
+    m.allow_jump = false
+    m.frame_index = 4
+    m.gravity = JUMP_GRAVITY
+    m.y_vel = m.y_vel + m.gravity
+    checkAllowFireball(g, m)
+    if m.y_vel >= 0.0 and m.y_vel < m.max_y_vel {
+        m.gravity = GRAVITY
+        m.state = ST_FALL
+    }
+    if g.K.left {
+        if m.x_vel > (m.max_x_vel * -1.0) { m.x_vel = m.x_vel - m.x_accel }
+    } else if g.K.right {
+        if m.x_vel < m.max_x_vel { m.x_vel = m.x_vel + m.x_accel }
+    }
+    if not g.K.jump {
+        m.gravity = GRAVITY
+        m.state = ST_FALL
+    }
+    if g.K.action and m.fire and m.allow_fireball { shootFireball(g, m) }
+}
+
+export func marioFalling(Game g, Mario m) {
+    checkAllowFireball(g, m)
+    if m.y_vel < MAX_Y_VEL { m.y_vel = m.y_vel + m.gravity }
+    if g.K.left {
+        if m.x_vel > (m.max_x_vel * -1.0) { m.x_vel = m.x_vel - m.x_accel }
+    } else if g.K.right {
+        if m.x_vel < m.max_x_vel { m.x_vel = m.x_vel + m.x_accel }
+    }
+    if g.K.action and m.fire and m.allow_fireball { shootFireball(g, m) }
+}
+
+export func marioDeathJump(Game g, Mario m) {
+    if m.death_timer == 0.0 {
+        m.death_timer = g.now
+    } else if (g.now - m.death_timer) > 500.0 {
+        m.y = m.y + m.y_vel
+        m.y_vel = m.y_vel + m.gravity
+    }
+}
+
+export func becomeBig(Mario m) {
+    m.big = true
+    setPose(m, true)
+    m.frame_index = 0
+}
+
+export func becomeSmall(Mario m) {
+    m.big = false
+    m.fire = false
+    setPose(m, false)
+    m.frame_index = 0
+}
+
+export func marioToBig(Game g, Mario m) {
+    m.in_transition = true
+    if m.transition_timer == 0.0 {
+        m.transition_timer = g.now
+        return
+    }
+    if (g.now - m.transition_timer) < 950.0 { return }
+    m.state = ST_WALK
+    m.in_transition = false
+    m.transition_timer = 0.0
+    becomeBig(m)
+}
+
+export func marioToFire(Game g, Mario m) {
+    m.in_transition = true
+    if m.fire_timer == 0.0 {
+        m.fire_timer = g.now
+        return
+    }
+    if (g.now - m.fire_timer) < 1040.0 { return }
+    m.fire = true
+    m.state = ST_WALK
+    m.in_transition = false
+    m.fire_timer = 0.0
+}
+
+export func marioToSmall(Game g, Mario m) {
+    m.in_transition = true
+    m.hurt_invincible = true
+    if m.transition_timer == 0.0 {
+        m.transition_timer = g.now
+        return
+    }
+    if (g.now - m.transition_timer) < 915.0 { return }
+    m.state = ST_WALK
+    m.in_transition = false
+    m.transition_timer = 0.0
+    if m.big { becomeSmall(m) }
+    m.hurt_invincible = true
+    m.hurt_timer2 = g.now
+}
+
+export func marioFlagSlide(Mario m) {
+    m.state = ST_FLAGPOLE
+    m.in_transition = true
+    m.x_vel = 0.0
+    m.y_vel = 0.0
+    m.x = m.flag_right - m.w
+    // ★ 收尾必须正好停在旗杆底座顶面（POLE_BASE_TOP），不能"脚底 ≥493 就收工"：
+    //   滑杆每帧 +5，脚底会落在 493~497 之间；一旦是 496/497（比底座顶面低），
+    //   退出滑杆后 marioXCollide 会把马里奥与底座的**侧面**判成相撞 →
+    //   resolveXItem 把他推到底座左边（x=8448）⇒ 从此永远走不过底座、
+    //   到不了城堡检查点，卡死在旗杆处进不了下一关。
+    if m.y + m.h >= POLE_BASE_TOP {
+        m.y = POLE_BASE_TOP - m.h
+        m.frame_index = 10
+        return
+    }
+    m.y = m.y + 5.0
+    if m.y + m.h > POLE_BASE_TOP { m.y = POLE_BASE_TOP - m.h }
+}
+
+export func marioBottomPole(Game g, Mario m) {
+    if m.flag_timer == 0.0 {
+        m.flag_timer = g.now
+        m.facing_right = false
+        return
+    }
+    if (g.now - m.flag_timer) < 210.0 { return }
+    m.in_transition = false
+    if m.y + m.h < 485.0 { m.state = ST_ENDFALL } else { m.state = ST_TOCASTLE }
+}
+
+export func setMarioBottomOfPole(Mario m) {
+    m.facing_right = false
+    m.flag_timer = 0.0
+    m.state = ST_BOTTOMPOLE
+}
+
+export func marioToCastle(Game g, Mario m) {
+    // ★ 抱杆/落地那两段是"面朝左"（facing_right=false）的姿势，走城堡这段必须转回朝右，
+    //   否则精灵是镜像的、人往右走却看着"倒着走"（这段没有玩家输入，朝向不会被覆盖）
+    m.facing_right = true
+    m.max_x_vel = 5.0
+    m.x_accel = WALK_ACCEL
+    if m.x_vel < m.max_x_vel { m.x_vel = m.x_vel + m.x_accel }
+    if m.walking_timer == 0.0 or (g.now - m.walking_timer) > 200.0 {
+        m.walking_timer = g.now
+    } else if (g.now - m.walking_timer) > animationSpeed(m) {
+        if m.frame_index < 3 { m.frame_index = m.frame_index + 1 } else { m.frame_index = 1 }
+        m.walking_timer = g.now
+    }
+}
+
+export func marioEndFall(Mario m) {
+    m.y_vel = m.y_vel + GRAVITY
+}
+
+export func startDeathJump(Game g, Mario m) {
+    playDeathJingle()          // 死亡音乐（原来漏了这句，所以死亡没声音）
+    m.dead = true
+    m.y_vel = -11.0
+    m.gravity = 0.5
+    m.frame_index = 6
+    m.state = ST_DEATHJUMP
+    m.in_transition = true
+    g.level_state = LS_FROZEN
+}
+
+// 无敌 / 受伤闪烁 / 蹲下（mario.py check_for_special_state）
+export func checkSpecialState(Game g, Mario m) {
+    // 蹲下：每帧把碰撞框收到 40x55（脚底不动）——只有大马里奥会变矮
+    if m.crouching and m.big { crouchPose(m) }
+    if m.invincible {
+        float d = g.now - m.inv_start
+        if d < 10000.0 {
+            m.losing_invincibility = false
+            if (g.now - m.inv_timer) > 30.0 {
+                if m.inv_index < 3 { m.inv_index = m.inv_index + 1 } else { m.inv_index = 0 }
+                m.frame_tint = m.inv_index
+                m.inv_timer = g.now
+            }
+            setMusic(0)
+        } else if d < 12000.0 {
+            m.losing_invincibility = true
+            if (g.now - m.inv_timer) > 100.0 {
+                if m.inv_index < 3 { m.inv_index = m.inv_index + 1 } else { m.inv_index = 0 }
+                m.frame_tint = m.inv_index
+                m.inv_timer = g.now
+            }
+        } else {
+            m.losing_invincibility = false
+            m.invincible = false
+            m.frame_tint = 0
+            stopInvincibleMusic()
+            if g.time <= 100 { setMusic(2) } else { setMusic(1) }
+        }
+    } else {
+        m.frame_tint = 0
+    }
+    if m.fire and not m.invincible { }
+    if m.hurt_invincible and m.state != ST_BIGTOSMALL {
+        if m.hurt_timer2 == 0.0 {
+            m.hurt_timer2 = g.now
+        } else if (g.now - m.hurt_timer2) > 2000.0 {
+            m.hurt_invincible = false
+            m.hurt_timer = 0.0
+            m.hurt_timer2 = 0.0
+        }
+    }
+}
+
+export func marioHandleState(Game g, Mario m) {
+    if m.state == ST_STAND { marioStanding(g, m) }
+    else if m.state == ST_WALK { marioWalking(g, m) }
+    else if m.state == ST_JUMP { marioJumping(g, m) }
+    else if m.state == ST_FALL { marioFalling(g, m) }
+    else if m.state == ST_DEATHJUMP { marioDeathJump(g, m) }
+    else if m.state == ST_SMALLTOBIG { marioToBig(g, m) }
+    else if m.state == ST_BIGTOFIRE { marioToFire(g, m) }
+    else if m.state == ST_BIGTOSMALL { marioToSmall(g, m) }
+    else if m.state == ST_FLAGPOLE { marioFlagSlide(m) }
+    else if m.state == ST_BOTTOMPOLE { marioBottomPole(g, m) }
+    else if m.state == ST_TOCASTLE { marioToCastle(g, m) }
+    else if m.state == ST_ENDFALL { marioEndFall(m) }
+}
+
+export func marioUpdate(Game g) {
+    if g.warp_kind != 0 { return }          // 钻水管期间由 warpsUpdate 接管
+    Mario m = g.mario
+    marioHandleState(g, m)
+    checkSpecialState(g, m)
+}
+
+// ==================== 马里奥碰撞（level1.py） ====================
+
+export func resolveXItem(Game g, float cx, float cw) {
+    Mario m = g.mario
+    if m.x < cx { m.x = cx - m.w } else { m.x = cx + cw }
+    m.x_vel = 0.0
+}
+
+export func hurtMario(Game g) {
+    Mario m = g.mario
+    if m.invincible { return }
+    if m.big {
+        playPipe()
+        m.fire = false
+        m.y_vel = -1.0
+        m.state = ST_BIGTOSMALL
+        m.in_transition = true
+        m.transition_timer = 0.0
+        convertFireflowersToMushrooms(g)
+    } else {
+        startDeathJump(g, m)
+    }
+}
+
+export func convertMushroomsToFireflowers(Game g) {
+    for 0:g.bricks.len() - 1 to i { if g.bricks[i].contents == CT_MUSHROOM { g.bricks[i].contents = CT_FIREFLOWER } }
+    for 0:g.coinboxes.len() - 1 to i { if g.coinboxes[i].contents == CT_MUSHROOM { g.coinboxes[i].contents = CT_FIREFLOWER } }
+}
+
+export func convertFireflowersToMushrooms(Game g) {
+    for 0:g.bricks.len() - 1 to i { if g.bricks[i].contents == CT_FIREFLOWER { g.bricks[i].contents = CT_MUSHROOM } }
+    for 0:g.coinboxes.len() - 1 to i { if g.coinboxes[i].contents == CT_FIREFLOWER { g.coinboxes[i].contents = CT_MUSHROOM } }
+}
+
+export func pickPowerupX(Game g, Powerup p) {
+    Mario m = g.mario
+    if p.kind == PK_STAR {
+        addScore(g, 1000, m.x + m.w * 0.5 - g.viewport_x, m.y)
+        m.invincible = true
+        m.inv_start = g.now
+        m.inv_timer = g.now
+        setMusic(0)
+        playInvincibleMusic()
+    } else if p.kind == PK_MUSHROOM {
+        playPowerup()
+        addScore(g, 1000, m.x + m.w * 0.5 - g.viewport_x, m.y - 20.0)
+        m.y_vel = -1.0
+        m.state = ST_SMALLTOBIG
+        m.in_transition = true
+        m.transition_timer = 0.0
+        convertMushroomsToFireflowers(g)
+    } else if p.kind == PK_LIFE {
+        addScoreOneUp(g, p.x + p.w - g.viewport_x, p.y)
+        playOneUp()
+    } else if p.kind == PK_FIREFLOWER {
+        playPowerup()
+        addScore(g, 1000, m.x + m.w * 0.5 - g.viewport_x, m.y)
+        if m.big and not m.fire {
+            m.state = ST_BIGTOFIRE
+            m.in_transition = true
+            m.fire_timer = 0.0
+        } else if not m.big {
+            m.state = ST_SMALLTOBIG
+            m.in_transition = true
+            m.transition_timer = 0.0
+            convertMushroomsToFireflowers(g)
+        }
+    }
+    if p.kind != PK_FIREBALL { p.active = false }
+}
+
+export func marioXCollide(Game g) {
+    Mario m = g.mario
+    int cbi = findCoinBox(g, m.x, m.y, m.w, m.h)
+    int bri = findBrick(g, m.x, m.y, m.w, m.h)
+    int coli = findSolid(g, m.x, m.y, m.w, m.h)
+    int ei = findEnemy(g, m.x, m.y, m.w, m.h)
+    int si = findShell(g, m.x, m.y, m.w, m.h)
+    int pi = findPowerup(g, m.x, m.y, m.w, m.h)
+
+    if cbi >= 0 {
+        CoinBox c = g.coinboxes[cbi]
+        resolveXItem(g, c.x, c.w)
+    } else if bri >= 0 {
+        Brick b = g.bricks[bri]
+        resolveXItem(g, b.x, b.w)
+    } else if coli >= 0 {
+        Box b = g.solids[coli]
+        resolveXItem(g, b.x, b.w)
+    } else if ei >= 0 {
+        Enemy e = g.enemies[ei]
+        if m.invincible {
+            playKick()
+            addScore(g, 100, m.x + m.w - g.viewport_x, m.y)
+            e.state = ES_DEATHJUMP
+            e.y_vel = -8.0; e.gravity = 0.5; e.frame_index = 3; e.x_vel = 2.0
+            g.dying.add(e)
+            e.active = false
+        } else if m.hurt_invincible {
+            // 受伤无敌期间穿过敌人
+        } else {
+            hurtMario(g)
+        }
+    } else if si >= 0 {
+        Enemy s = g.shells[si]
+        if s.state == ES_JUMPEDON {
+            if m.x < s.x {
+                addScore(g, 400, s.x + s.w * 0.5 - g.viewport_x, s.y)
+                m.x = s.x - m.w
+                s.direction = 1
+                s.x_vel = 5.0
+                s.x = s.x + 5.0
+            } else {
+                m.x = s.x + s.w
+                s.direction = 0
+                s.x_vel = -5.0
+                s.x = s.x - 5.0
+            }
+            s.state = ES_SHELLSLIDE
+        } else if s.state == ES_SHELLSLIDE {
+            if m.big and not m.invincible {
+                hurtMario(g)
+            } else if m.invincible {
+                addScore(g, 200, s.x + s.w - g.viewport_x, s.y)
+                s.state = ES_DEATHJUMP
+                s.y_vel = -8.0; s.gravity = 0.5; s.x_vel = 2.0
+                g.dying.add(s)
+                s.active = false
+            } else if not m.hurt_invincible {
+                startDeathJump(g, m)
+            }
+        }
+    } else if pi >= 0 {
+        Powerup p = g.powerups[pi]
+        pickPowerupX(g, p)
+    }
+}
+
+export func marioYCollide(Game g) {
+    Mario m = g.mario
+    int coli = findSolid(g, m.x, m.y, m.w, m.h)
+    int ei = findEnemy(g, m.x, m.y, m.w, m.h)
+    int si = findShell(g, m.x, m.y, m.w, m.h)
+    int bri = findBrick(g, m.x, m.y, m.w, m.h)
+    int cbi = findCoinBox(g, m.x, m.y, m.w, m.h)
+    int pi = findPowerup(g, m.x, m.y, m.w, m.h)
+
+    // prevent_collision_conflict：砖块与金币箱只认离马里奥中心更近的那个
+    if bri >= 0 and cbi >= 0 {
+        Brick b = g.bricks[bri]
+        CoinBox c = g.coinboxes[cbi]
+        float d1 = m.x + m.w * 0.5 - (b.x + b.w * 0.5)
+        if d1 < 0.0 { d1 = 0.0 - d1 }
+        float d2 = m.x + m.w * 0.5 - (c.x + c.w * 0.5)
+        if d2 < 0.0 { d2 = 0.0 - d2 }
+        if d1 < d2 { cbi = -1 } else { bri = -1 }
+    }
+
+    if cbi >= 0 {
+        CoinBox c = g.coinboxes[cbi]
+        if m.y > c.y {
+            if c.state == BS_RESTING {
+                if c.contents == CT_COIN {
+                    addScore(g, 200, c.x + c.w * 0.5 - g.viewport_x, c.y - 40.0)
+                    g.coins = g.coins + 1
+                    coinBoxStartBump(g, c)
+                } else {
+                    coinBoxStartBump(g, c)
+                }
+            }
+            playBump()
+            m.y_vel = 7.0
+            m.y = c.y + c.h
+            m.state = ST_FALL
+        } else {
+            m.y_vel = 0.0
+            m.y = c.y - m.h
+            m.state = ST_WALK
+        }
+    } else if bri >= 0 {
+        Brick b = g.bricks[bri]
+        if m.y > b.y {
+            if b.state == BS_RESTING {
+                if m.big and b.contents == CT_NONE {
+                    playBrickSmash()
+                    checkEnemyOnBrick(g, b)
+                    spawnPieces(g, b.x, b.y)
+                    b.visible = false
+                } else {
+                    playBump()
+                    if b.coin_total > 0 {
+                        g.coins = g.coins + 1
+                        addScore(g, 200, b.x + b.w * 0.5 - g.viewport_x, b.y - 40.0)
+                    }
+                    checkEnemyOnBrick(g, b)
+                    brickStartBump(g, b)
+                }
+            } else if b.state == BS_OPENED {
+                playBump()
+            }
+            m.y_vel = 7.0
+            m.y = b.y + b.h
+            m.state = ST_FALL
+        } else {
+            m.y_vel = 0.0
+            m.y = b.y - m.h
+            m.state = ST_WALK
+        }
+    } else if coli >= 0 {
+        Box c = g.solids[coli]
+        if c.y + c.h > m.y + m.h {
+            m.y_vel = 0.0
+            m.y = c.y - m.h
+            if m.state == ST_ENDFALL { m.state = ST_TOCASTLE } else { m.state = ST_WALK }
+        } else if c.y < m.y {
+            m.y_vel = 7.0
+            m.y = c.y + c.h
+            m.state = ST_FALL
+        }
+    } else if ei >= 0 {
+        Enemy e = g.enemies[ei]
+        if m.invincible {
+            playKick()
+            e.state = ES_DEATHJUMP
+            e.y_vel = -8.0; e.gravity = 0.5; e.frame_index = 3; e.x_vel = 2.0
+            g.dying.add(e)
+            e.active = false
+        } else if m.y_vel > 0.0 {
+            playStomp()
+            addScore(g, 100, e.x + e.w * 0.5 - g.viewport_x, e.y)
+            e.state = ES_JUMPEDON
+            if e.kind == EK_GOOMBA {
+                e.frame_index = 2
+                e.death_timer = g.now
+                g.dying.add(e)
+                e.active = false
+            } else {
+                // 乌龟 → 变成壳
+                float sb = e.y + e.h
+                e.w = 40.0
+                e.h = 37.0
+                e.y = sb - e.h
+                e.x_vel = 0.0
+                e.state = ES_JUMPEDON
+                g.shells.add(e)
+                e.in_shell = true
+                e.active = false          // 从敌人表里摘掉，只作为"壳"存在
+            }
+            m.y = e.y - m.h
+            m.state = ST_JUMP
+            m.y_vel = -7.0
+        }
+    } else if si >= 0 {
+        Enemy s = g.shells[si]
+        if m.y_vel > 0.0 {
+            addScore(g, 400, m.x + m.w * 0.5 - g.viewport_x, m.y)
+            if s.state == ES_JUMPEDON {
+                playKick()
+                s.state = ES_SHELLSLIDE
+                if m.x + m.w * 0.5 < s.x + s.w * 0.5 { s.direction = 1; s.x = m.x + m.w + 5.0 } 
+                else { s.direction = 0; s.x = m.x - s.w - 5.0 }
+            } else {
+                s.state = ES_JUMPEDON
+                s.x_vel = 0.0
+            }
+        }
+    } else if pi >= 0 {
+        Powerup p = g.powerups[pi]
+        if p.kind == PK_STAR {
+            playPowerup()
+            p.active = false
+            m.invincible = true
+            m.inv_start = g.now
+            m.inv_timer = g.now
+            setMusic(0)
+            playInvincibleMusic()
+        }
+    }
+    testIfMarioIsFalling(g)
+}
+
+export func testIfMarioIsFalling(Game g) {
+    Mario m = g.mario
+    m.y = m.y + 1.0
+    int a = findSolid(g, m.x, m.y, m.w, m.h)
+    int b = findBrick(g, m.x, m.y, m.w, m.h)
+    int c = findCoinBox(g, m.x, m.y, m.w, m.h)
+    if a < 0 and b < 0 and c < 0 {
+        if m.state == ST_TOCASTLE or m.state == ST_ENDFALL {
+            m.state = ST_ENDFALL
+        } else if m.state != ST_JUMP and m.state != ST_DEATHJUMP and m.state != ST_SMALLTOBIG
+            and m.state != ST_BIGTOFIRE and m.state != ST_BIGTOSMALL and m.state != ST_FLAGPOLE {
+            m.state = ST_FALL
+        }
+    }
+    m.y = m.y - 1.0
+}
+
+export func adjustMarioPosition(Game g) {
+    if g.warp_kind != 0 { return }      // 钻管子期间不允许任何人推动马里奥（否则会被水管挤到旁边 ✗）
+    Mario m = g.mario
+    m.x = m.x + _float(_int(0.5 + m.x_vel))
+    marioXCollide(g)
+    if not m.in_transition {
+        m.y = m.y + _float(_int(0.5 + m.y_vel))
+        marioYCollide(g)
+    }
+    if m.x < (g.viewport_x + 5.0) { m.x = g.viewport_x + 5.0 }
+}
+
