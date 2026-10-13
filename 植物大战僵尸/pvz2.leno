@@ -267,12 +267,16 @@ var ZH1  = types.Z_HAT1
 var ZH2  = types.Z_HAT2
 var ZSP  = types.Z_SPEED
 var ZWD  = types.Z_WIDTH
+var ZINKL = types.Z_INK_L
 var ZCT  = types.Z_COST
 var ZWT  = types.Z_WEIGHT
 var ZFG  = types.Z_FLAGS
 var LVBG = types.LV_BG
 var LVFL = types.LV_FLAGS
 var LVSUN= types.LV_SUN
+// 选卡界面卡片网格的行距：绘制与命中判定必须用同一个值
+// （原来绘制 72、命中 69 ⇒ 越往下偏差越大，点第三/四行会选到隔壁行的卡片）
+var CARD_ROW_H = 72.0
 var LVGR = types.LV_GRAVE
 var LVTI = types.LV_TITLE
 
@@ -1253,7 +1257,7 @@ func updatePlants(Game g) {
             var cry = false
             for g.zombies to z {
                 if not z.alive or z.state == ZS_DIE or z.hypno or z.row != p.row { continue }
-                var zc = z.x + z.width * 0.5
+                var zc = z.x + ZINKL[z.ztype] + z.width * 0.5
                 if zc > p.x - 140.0 and zc < p.x + 130.0 { cry = true }
             }
             if cry {
@@ -1374,7 +1378,7 @@ func updatePlants(Game g) {
                 var i = 0
                 for g.zombies to z {
                     if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row {
-                        var zc = z.x + z.width * 0.5
+                        var zc = z.x + ZINKL[z.ztype] + z.width * 0.5
                         if zc > p.x - 45.0 and zc < p.x + 45.0 {
                             hurtZombie(g, i, 20.0, DT_COMMON, 0)
                         }
@@ -1403,7 +1407,7 @@ func updatePlants(Game g) {
                     var i = 0
                     for g.zombies to z {
                         if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row {
-                            var zc = z.x + z.width * 0.5
+                            var zc = z.x + ZINKL[z.ztype] + z.width * 0.5
                             if zc > _float(p.sub) - 70.0 and zc < _float(p.sub) + 70.0 {
                                 hurtZombie(g, i, 1800.0, DT_ASH, 0)
                             }
@@ -1423,7 +1427,7 @@ func updatePlants(Game g) {
             var i2 = 0
             for g.zombies to z {
                 if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row and not z.diving {
-                    var zc2 = z.x + z.width * 0.5
+                    var zc2 = z.x + ZINKL[z.ztype] + z.width * 0.5
                     if zc2 > p.x - 30.0 and zc2 < p.x + 216.0 {
                         ti = i2
                         tx = zc2
@@ -1460,7 +1464,7 @@ func updatePlants(Game g) {
                     var i3 = 0
                     for g.zombies to z {
                         if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row {
-                            var zc3 = z.x + z.width * 0.5
+                            var zc3 = z.x + ZINKL[z.ztype] + z.width * 0.5
                             if zc3 > p.x - 60.0 and zc3 < p.x + 90.0 { ti2 = i3 }
                         }
                         i3 = i3 + 1
@@ -1510,7 +1514,7 @@ func updatePlants(Game g) {
             var i4 = 0
             for g.zombies to z {
                 if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row {
-                    var zc4 = z.x + z.width * 0.5
+                    var zc4 = z.x + ZINKL[z.ztype] + z.width * 0.5
                     if zc4 > p.x - 45.0 and zc4 < p.x + 45.0 { ti3 = i4; break }
                 }
                 i4 = i4 + 1
@@ -1539,7 +1543,7 @@ func updatePlants(Game g) {
                 var i5 = 0
                 for g.zombies to z {
                     if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row {
-                        var zc5 = z.x + z.width * 0.5
+                        var zc5 = z.x + ZINKL[z.ztype] + z.width * 0.5
                         if zc5 > p.x - 50.0 and zc5 < p.x + 50.0 { ti4 = i5; break }
                     }
                     i5 = i5 + 1
@@ -1844,7 +1848,7 @@ func killZombie(Game g, Zombie z, bool ash) {
     z.aframe = 0.0
     z.dieT = 0
     g.killed = g.killed + 1
-    addParticles(g, z.x + z.width * 0.5, z.y - 80.0, 14, #8D6E63FF)
+    addParticles(g, z.x + ZINKL[z.ztype] + z.width * 0.5, z.y - 80.0, 14, #8D6E63FF)
     sfx(g, g.sfxPop)
 }
 
@@ -1963,7 +1967,12 @@ func updateZombies(Game g) {
             z.aframe = z.aframe + 1.0
             z.dieT = z.dieT + 1
             var an = g.anims[zombieDrawAnim(g, z)]
-            if z.dieT > 300 or frameIdx(an, z.aframe) >= an.n { continue }
+            // ⚠ 不能写 frameIdx(an, z.aframe) >= an.n：frameIdx 内部是取模的
+            //   （while fi >= a.n { fi = fi - a.n }）⇒ 恒 < n，条件永假。
+            //   原来就只能靠 dieT > 300 兜底 ⇒ 倒地后死亡动画循环重播 5 秒，
+            //   看起来就是"尸体倒地不停抽搐"。改用"帧号走到 interval*n"判播完。
+            if z.dieT > 300 or z.aframe >= _float(an.interval * an.n) { continue }
+                print("[die] 死亡动画结束 type=" + _str(z.ztype) + " dieT=" + _str(z.dieT))
             live.add(z)
             continue
         }
@@ -1993,7 +2002,7 @@ func updateZombies(Game g) {
         // 掉头：进入濒死衰伤
         if z.hp <= 70.0 and z.hp > 0.0 and not z.losthead {
             z.losthead = true
-            addParticles(g, z.x + z.width * 0.5, z.y - 120.0, 10, #8D6E63FF)
+            addParticles(g, z.x + ZINKL[z.ztype] + z.width * 0.5, z.y - 120.0, 10, #8D6E63FF)
             sfx(g, g.sfxPop)
         }
         if z.losthead and z.hp > 0.0 { z.hp = z.hp - 0.42 }
@@ -2105,7 +2114,7 @@ func updateZombies(Game g) {
         var spd = z.speed
         if z.slowT > 0 { spd = spd * 0.5 }
         if z.ztype == Z_ZOMBONI {
-            var col = colAt(g, z.x + z.width * 0.5)
+            var col = colAt(g, z.x + ZINKL[z.ztype] + z.width * 0.5)
             spd = 1.5 - _float(9 - col) * 0.225
             if spd < 0.6 { spd = 0.6 }
             if z.slowT > 0 { spd = spd * 0.5 }
@@ -2159,7 +2168,7 @@ func crushPlants(Game g, Zombie z) {
     for g.plants to q {
         if not q.alive or q.row != z.row { continue }
         if q.ptype == P_SPIKEWEED {
-            var zc = z.x + z.width * 0.5
+            var zc = z.x + ZINKL[z.ztype] + z.width * 0.5
             if zc > q.x - 45.0 and zc < q.x + 45.0 {
                 q.alive = false
                 hurtZombie(g, zombieIdx(g, z), 1800.0, DT_ASH, 0)
@@ -2183,7 +2192,7 @@ func zombieIdx(Game g, Zombie z): int {
 }
 
 func spawnIce(Game g, Zombie z) {
-    var col = colAt(g, z.x + z.width * 0.5)
+    var col = colAt(g, z.x + ZINKL[z.ztype] + z.width * 0.5)
     var row = z.row
     for g.ices to ic {
         if ic.row == row and ic.col == col { return }
@@ -2225,7 +2234,11 @@ func updateBullets(Game g) {
                 var yOk = b.y > z.y - 140.0 and b.y < z.y + 10.0
                 var rowOk = true
                 if b.kind != BK_STAR { rowOk = z.row == b.row }
-                if yOk and rowOk and b.x > z.x - 8.0 and b.x < z.x + z.width + 8.0 {
+                // 僵尸可见身体的左缘：z.x 只是整帧左边，素材左侧有一大段透明
+                // （普通僵尸 69px）⇒ 直接拿 z.x 比会让豌豆离着半个身子远就"击中"
+                var front = z.x + ZINKL[z.ztype]
+                if yOk and rowOk and b.x > front and b.x < z.x + z.width + 8.0 {
+                    print("[hit] 豌豆左缘-僵尸可见前缘=" + _str(b.x - front) + " 类型=" + _str(z.ztype))
                     hitIdx = i
                     break
                 }
@@ -2245,7 +2258,7 @@ func updateBullets(Game g) {
                 var j = 0
                 for g.zombies to z {
                     if z.alive and z.state != ZS_DIE and not z.hypno and z.row == b.row {
-                        var zc = z.x + z.width * 0.5
+                        var zc = z.x + ZINKL[z.ztype] + z.width * 0.5
                         if zc > b.x - 40.0 and zc < b.x + 40.0 {
                             hurtZombie(g, j, 13.0, DT_COMMON, 2)
                         }
@@ -2389,7 +2402,7 @@ func ashBlast(Game g, float x, float y, float rx, int rowRange, float dmg) {
     var i = 0
     for g.zombies to z {
         if z.alive and z.state != ZS_DIE and not z.hypno {
-            var zc = z.x + z.width * 0.5
+            var zc = z.x + ZINKL[z.ztype] + z.width * 0.5
             if zc > x - rx and zc < x + rx {
                 var dy = z.y - y
                 var lim = _float(rowRange) * _float(g.cellH) + 60.0
@@ -2442,7 +2455,7 @@ func doomBlast(Game g, Plant p) {
     var i = 0
     for g.zombies to z {
         if z.alive and z.state != ZS_DIE and not z.hypno {
-            var zc = z.x + z.width * 0.5
+            var zc = z.x + ZINKL[z.ztype] + z.width * 0.5
             if zc > p.x - 250.0 and zc < p.x + 250.0 {
                 var dy = z.y - p.y
                 if dy > -260.0 and dy < 260.0 { hurtZombie(g, i, 1800.0, DT_ASH, 0) }
@@ -2623,7 +2636,12 @@ func tryPlant(Game g, int row, int col) {
         if g.selCard < 0 or g.selCard >= g.belt.len() { return }
         t = g.belt[g.selCard]
     } else {
-        t = g.selCard
+        // 普通种子栏里 g.selCard 是"第几张卡"的下标，不是植物类型号：
+        // 必须经 g.chosen 换算（高亮绘制、种植预览、数字键选卡都用的是下标口径）。
+        // 原来直接 t = g.selCard ⇒ 点第 4 张卡(下标 3)会种下类型号 3 的坚果墙，
+        // 而且让坚果墙的卡片进冷却，看着就像"选第 4 张却选中了第 3 张"。
+        if g.selCard < 0 or g.selCard >= g.chosen.len() { return }
+        t = g.chosen[g.selCard]
     }
     if t < 0 { return }
     if not canPlantAt(g, row, col, t) {
@@ -2881,6 +2899,18 @@ func drawEffects(Game g, Renderer r) {
 
 // ==================== HUD ====================
 
+// 卡片价格数字：白字 + 黑描边。卡片底衬是原版种子包的浅色带（放太阳图标那条），
+// 纯白字糊在上面看不清（变暗的卡片上又反过来）⇒ 照原版做"白字黑边"。
+// TTF 没有描边API，用四向偏移叠一层黑色模拟（选卡界面卡片多，这里全量用）。
+func drawCardCost(Renderer r, Font f, int cost, float x, float w, float y) {
+    string s = "" + cost
+    r.drawTextCentered(f, s, x - 1.0, w, y, #000000CC)
+    r.drawTextCentered(f, s, x + 1.0, w, y, #000000CC)
+    r.drawTextCentered(f, s, x, w, y - 1.0, #000000CC)
+    r.drawTextCentered(f, s, x, w, y + 1.0, #000000CC)
+    r.drawTextCentered(f, s, x, w, y, #FFFFFFFF)
+}
+
 func drawCardImg(Game g, Renderer r, int t, float x, float y, float w, float h, bool dim) {
     if t >= 0 and t < g.texCards.len() {
         drawTex(r, g.texCards[t], x, y, w, h)
@@ -3109,18 +3139,18 @@ func drawChoose(Game g, Renderer r) {
     for g.chosen to t {
         var cx = 77.0 + _float(ci) * 51.0
         drawCardImg(g, r, t, cx, 8.0, 50.0, 70.0, false)
-        r.drawTextCentered(g.font, "" + PC[t], cx, 50.0, 58.0, #FFFFFFFF)
+        drawCardCost(r, g.font, PC[t], cx, 50.0, 58.0)
         ci = ci + 1
     }
     // 全部卡片网格
     for 0 : PLANT_N - 1 to i {
         var gx = 22.0 + _float(i % 8) * 53.0
-        var gy = 125.0 + _float(i / 8) * 72.0
+        var gy = 125.0 + _float(i / 8) * CARD_ROW_H
         var picked = false
         for g.chosen to t { if t == i { picked = true } }
         var dim = picked or cardNotRecommend(g, i) == 1
         drawCardImg(g, r, i, gx, gy, 50.0, 70.0, dim)
-        r.drawTextCentered(g.font, "" + PC[i], gx, 50.0, gy + 50.0, #FFFFFFFF)
+        drawCardCost(r, g.font, PC[i], gx, 50.0, gy + 50.0)
     }
     if g.chosen.len() >= 10 {
         drawTex(r, g.texStartBtn, 155.0, 547.0, 154.0, 37.0)
@@ -3387,11 +3417,17 @@ func onClick(Game g, float mx, float my) {
         }
         // 点卡片网格
         if mx < 480.0 and my > 100.0 {
-            var idx = _int((my - 125.0) / 69.0) * 8 + _int((mx - 22.0) / 53.0)
+            var idx = _int((my - 125.0) / CARD_ROW_H) * 8 + _int((mx - 22.0) / 53.0)
             if idx >= 0 and idx < PLANT_N and mx > 22.0 and my > 125.0 {
                 var gx = 22.0 + _float(idx % 8) * 53.0
-                var gy = 125.0 + _float(idx / 8) * 69.0
+                var gy = 125.0 + _float(idx / 8) * CARD_ROW_H
                 if inRect(mx, my, gx, gy, 50.0, 70.0) {
+                    // 本关不适用的卡片（水生/夜晚/咖啡豆…画面上是变暗的）不允许选：
+                    // 原来只画了变暗、点击没拦 ⇒ 看着不能点的卡却能拖到种子栏里，很怪
+                    if cardNotRecommend(g, idx) == 1 {
+                        sfx(g, g.sfxBuzzer)
+                        return
+                    }
                     var has = false
                     for g.chosen to t { if t == idx { has = true } }
                     if has {
