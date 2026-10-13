@@ -284,7 +284,19 @@ var LVTI = types.LV_TITLE
 
 var WIN_W = 800
 var WIN_H = 600
-var BG_OX = 150.0        // 背景图左移量（显示 1400 宽图中的 x∈[150,950]；草坪在图中 x≈250~1000）
+
+// 草坪网格列数（9 列；行数按关卡：白天 5、水池 6）
+var MAP_COLS = 9
+
+// 背景图（1400×600）里草坪瓷砖的实测像素矩形 —— 见 drawBackground 的标定说明。
+// 取的是"最强边缘"（灰度梯度最大处），不是过渡带的中点：这样图里草坪的可见边界
+// 正好压在网格线上（实测渲染后草坪左右缘落在 x=100/793、上下缘落在 y=90/575）。
+// 横向 4 张背景共用（三张图在 y≈220 都量到"人行道→草"的过渡）；竖向白天/夜晚量准，
+// 另有行缝 163/266/368/471 与线性插值吻合（±1.5px）⇒ 5 行等分成立。
+var BG_LAWN_X = 250.0
+var BG_LAWN_W = 747.5
+var BG_LAWN_Y = 62.0
+var BG_LAWN_B = 573.0
 
 // 保龄球坚果（小游戏用，特殊植物 id）
 var P_BOWL1 = 100
@@ -600,7 +612,9 @@ func initLevel(Game g, int mode, int idx) {
     g.isNight = (bg == BG_NIGHT)
     g.isPool = (bg == BG_POOL or bg == BG_FOG)
 
-    // 网格（对齐背景图草坪：图中草坪 x≈250~1000、y≈64~575；BG_OX=150 后屏幕上草坪 x≈100~850）
+    // 网格。注意：格子尺寸不跟背景图的瓷砖一样大（图里是 83.28×102.2，格子是 77×97），
+    // 由 drawBackground 把背景**缩放**到这套格子上 —— 谁对齐谁只能选一边：格子得让
+    // 9 列都落在 800 宽窗口内（图里 9 列有 749.5 宽，1:1 画的话第 9 列要溢出 47px）。
     if g.isPool {
         g.rows = 6; g.cellW = 77; g.cellH = 85
         g.mapOX = 100.0; g.mapOY = 90.0
@@ -2772,15 +2786,40 @@ func btnHit(Game g, float cx, float cy, float w, float h): bool {
 
 // ==================== 场景渲染 ====================
 
+// 背景绘制 —— 把背景图里的草坪矩形**缩放**到游戏草坪矩形上（原来是 1:1 裁切）。
+// 为什么必须缩放：图里草坪瓷砖实测 82.9×102.4（草坪 x∈[253,999]、y∈[63,575]，9 列 5 行），
+// 而网格是 77×97。1:1 画的话每往右一格差 5.9px、每往上一行差 5.4px，逐格累积 ——
+// 到第 7~8 列整整差一列、最上一行差 27px，种植预览/铲子高亮/命中判定全跟着偏，
+// 就是"越到后面错位越厉害"。
+// 反过来（把网格改成 82.9×102.4）不行：图里 9 列宽 746，加上左边的房子（100px）
+// 会超出 800 宽的窗口，第 9 列要被切掉 46px，最右一列就没法种了。所以让背景来迁就网格。
 func drawBackground(Game g, Renderer r) {
-    drawTexCrop(r, g.texBg, BG_OX, 0.0, 800.0, 600.0, 0.0, 0.0, 800.0, 600.0)
+    var kx = _float(MAP_COLS * g.cellW) / BG_LAWN_W        // 横向缩放
+    var x  = g.mapOX - BG_LAWN_X * kx                      // 整图左端（图内 x=0）的屏幕位置
+    var w  = 1400.0 * kx
+    if g.isPool {
+        // 水池/迷雾背景的竖向还没标定（图里水面在 y≈275~455，行高约 90），先只对齐横向，
+        // 竖向保持 1:1 原样 —— 免得把本来还凑合的水位改坏。
+        drawTexCrop(r, g.texBg, 0.0, 0.0, 1400.0, 600.0, x, 0.0, w, 600.0)
+        return
+    }
+    var ky = _float(g.rows * g.cellH) / (BG_LAWN_B - BG_LAWN_Y)   // 竖向缩放：草坪 5 行正好铺满
+    // 草坪以上（图内 y<BG_LAWN_Y 的树篱/天空）单独拉伸铺满 0..mapOY：按精确比例画
+    // 这里会在屏幕顶部留一条没画到的黑边（选卡界面右上角能看见）。
+    drawTexCrop(r, g.texBg, 0.0, 0.0, 1400.0, BG_LAWN_Y, x, 0.0, w, g.mapOY)
+    // 草坪及以下：精确比例，草坪上缘正好落在 mapOY、下缘落在最后一行的底边
+    drawTexCrop(r, g.texBg, 0.0, BG_LAWN_Y, 1400.0, 600.0 - BG_LAWN_Y,
+                x, g.mapOY, w, (600.0 - BG_LAWN_Y) * ky)
 }
 
 func drawField(Game g, Renderer r) {
     // 冰道
     for g.ices to ic {
         if ic.alive {
-            drawAnim(r, g.anims[A_ICE], _float((g.frame / 8) % 4), ic.x, ic.y)
+            // drawAnim 收的是"帧号"（内部按 interval 换算下标）⇒ 这里把想要的帧下标
+            // 乘回 interval，等价于"每 8 个游戏帧换一帧"。
+            var iceAn = g.anims[A_ICE]
+            drawAnim(r, iceAn, _float((g.frame / 8) % 4) * _float(iceAn.interval), ic.x, ic.y)
         }
     }
     // 坑
@@ -3012,7 +3051,7 @@ func drawHUD(Game g, Renderer r) {
     }
 
     // 种植预览
-    if g.selCard >= 0 and g.mx > g.mapOX and g.mx < g.mapOX + 693.0 and g.my > g.mapOY {
+    if g.selCard >= 0 and g.mx > g.mapOX and g.mx < g.mapOX + _float(MAP_COLS * g.cellW) and g.my > g.mapOY {
         var col = colAt(g, g.mx)
         var row = rowAt(g, g.my)
         if col >= 0 and col <= 8 and row >= 0 and row < g.rows {
@@ -3592,7 +3631,7 @@ func onClick(Game g, float mx, float my) {
     }
 
     // 草坪区域
-    if mx < g.mapOX or mx > g.mapOX + 693.0 or my < g.mapOY { return }
+    if mx < g.mapOX or mx > g.mapOX + _float(MAP_COLS * g.cellW) or my < g.mapOY { return }
     var col = colAt(g, mx)
     var row = rowAt(g, my)
     if col < 0 or col > 8 or row < 0 or row >= g.rows { return }

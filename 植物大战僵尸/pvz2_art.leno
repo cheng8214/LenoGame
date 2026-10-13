@@ -471,12 +471,16 @@ export func loadAnimStep(Game g, Renderer r, int from, int n): int {
 
 // ==================== 绘制 ====================
 
+// ⚠ 这三个函数的 frame 参数是**帧号累加值**（各实体每帧 +1.0 的那个 aframe），
+//   不是帧下标！内部必须过 frameIdx 按 interval 换算：
+//   原来写成 `_int(frame)` ⇒ 直接拿累加值当下标，动画帧每帧都在换，等于按渲染帧率播：
+//   植物 idle（interval=4）快 4 倍（"植物摇得飞快"）、僵尸走（interval=11）快 11 倍、
+//   阳光/子弹/墓碑同理。游戏逻辑侧的判定都在用 frameIdx，只有绘制这三处漏了。
+
 // 底部中心锚点（植物/阳光/墓碑用）
 export func drawAnim(Renderer r, FrameAnim a, float frame, float x, float y) {
     if a.n <= 0 { return }
-    var fi = _int(frame)
-    if fi < 0 { fi = 0 }
-    while fi >= a.n { fi = fi - a.n }
+    var fi = frameIdx(a, frame)
     var t = a.tex[fi]
     if t == null { return }
     var w = a.fw[fi]
@@ -487,9 +491,7 @@ export func drawAnim(Renderer r, FrameAnim a, float frame, float x, float y) {
 // 左下角锚点（僵尸用：x = 身体左边缘）
 export func drawAnimLeft(Renderer r, FrameAnim a, float frame, float x, float y) {
     if a.n <= 0 { return }
-    var fi = _int(frame)
-    if fi < 0 { fi = 0 }
-    while fi >= a.n { fi = fi - a.n }
+    var fi = frameIdx(a, frame)
     var t = a.tex[fi]
     if t == null { return }
     r.drawTextureAt(t, x, y - a.fh[fi], a.fw[fi], a.fh[fi])
@@ -498,9 +500,7 @@ export func drawAnimLeft(Renderer r, FrameAnim a, float frame, float x, float y)
 // 顶部中心锚点（子弹用：x,y = 中心）
 export func drawAnimMid(Renderer r, FrameAnim a, float frame, float x, float y) {
     if a.n <= 0 { return }
-    var fi = _int(frame)
-    if fi < 0 { fi = 0 }
-    while fi >= a.n { fi = fi - a.n }
+    var fi = frameIdx(a, frame)
     var t = a.tex[fi]
     if t == null { return }
     var w = a.fw[fi]
