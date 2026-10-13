@@ -1546,7 +1546,7 @@ struct AnimEditor {
 
         // 标题栏
         titleBar = SDL3.createTitleBar({
-            title: "PvZ 动画编辑器", height: 36, font_size: 12, title_align: "center"
+            title: "PvZ 动画编辑器", h: 36, font_size: 12, title_align: "center"
         })
         win.add(titleBar)
         float titleH = titleBar.get_h()
@@ -1737,7 +1737,7 @@ struct AnimEditor {
         var bottomSplit = SDL3.createSplitter({
             orientation: 0, ratio: 0.55,
             min_first: 120, min_second: 160,
-            divider_width: 4, hit_pad: 5
+            sep_width: 4, hit_pad: 5
         })
         bottomSplit.set_first(layerList)
         bottomSplit.set_second(layerBtnPanel)
@@ -1776,7 +1776,7 @@ struct AnimEditor {
         midVSplit = SDL3.createSplitter({
             orientation: 1, ratio: 0.74,
             min_first: 220, min_second: 150,
-            divider_width: 4, hit_pad: 5
+            sep_width: 4, hit_pad: 5
         })
         midVSplit.set_first(canvas)
         midVSplit.set_second(bottomSplit)
@@ -1784,7 +1784,7 @@ struct AnimEditor {
         innerHSplit = SDL3.createSplitter({
             orientation: 0, ratio: 0.78,
             min_first: 360, min_second: 250,
-            divider_width: 5, hit_pad: 5
+            sep_width: 5, hit_pad: 5
         })
         innerHSplit.set_first(midVSplit)
         innerHSplit.set_second(sidePanel)
@@ -1792,7 +1792,7 @@ struct AnimEditor {
         mainSplit = SDL3.createSplitter({
             orientation: 0, ratio: 0.13,
             min_first: 110, min_second: 600,
-            divider_width: 5, hit_pad: 5
+            sep_width: 5, hit_pad: 5
         })
         mainSplit.set_first(fileList)
         mainSplit.set_second(innerHSplit)
