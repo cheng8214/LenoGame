@@ -1,0 +1,3875 @@
+// pvz2.leno — 植物大战僵尸完整版（Leno + SDL3）
+//
+// 仿写自 pypvz（Python 版植物大战僵尸）：
+//   · 29 种植物 / 13 种僵尸（含水生变种），数值与行为对齐原版
+//   · 冒险模式 13 关（白天/黑夜/泳池/浓雾）+ 6 个小游戏（保龄球×2 / 大决战×3 / 传送带）
+//   · 选卡、铲子、小推车、波次、进度条、墓碑、存档、奖杯
+//
+// 操作：左键选卡/种植/收阳光/点按钮；1~9,0 选卡；S 铲子；P 暂停；M 静音；R 重开；ESC 取消
+//
+// 素材：image/（逐帧 PNG）、sound/、music/、font/ —— 来自 pypvz 的 resources/
+
+import "SDL3" as SDL3
+import "Music" as audio
+import "pvz2_types.leno" as types
+import "pvz2_art.leno" as art
+import maths
+import rands
+import files
+import dirs
+use SDL3.(Event, Renderer, Scancode, Font)
+use audio.(Sound, Sfx)
+use types.(Game, Plant, Zombie, Bullet, Sun, Mower, Particle, FloatText, Grave, Hole, IceTile, FrameAnim, isSleepPlant, isWaterPlant)
+use art.(drawAnim, drawAnimLeft, drawAnimMid, stepFrame, frameIdx, loadAnimStep, loadAnimGroup, animPath, texPath, initCrops)
+
+// ==================== 常量别名（从 types / art 导入，保持单一数据源）====================
+
+var ANIM_N = art.ANIM_N
+var ST_LGSEL = types.ST_LGSEL
+var BAR_BOWLING = types.BAR_BOWLING
+var BAR_MOVE = types.BAR_MOVE
+var BAR_STATIC = types.BAR_STATIC
+var BG_DAY = types.BG_DAY
+var BG_FOG = types.BG_FOG
+var BG_NIGHT = types.BG_NIGHT
+var BG_POOL = types.BG_POOL
+var BG_SINGLE = types.BG_SINGLE
+var BG_TRIPLE = types.BG_TRIPLE
+var LV_COUNT = types.LV_COUNT
+var MODE_ADV = types.MODE_ADV
+var MODE_LG = types.MODE_LG
+var P_CHERRY = types.P_CHERRY
+var P_CHOMPER = types.P_CHOMPER
+var P_COFFEEBEAN = types.P_COFFEEBEAN
+var P_DOOMSHROOM = types.P_DOOMSHROOM
+var P_FUMESHROOM = types.P_FUMESHROOM
+var P_GARLIC = types.P_GARLIC
+var P_GRAVEBUSTER = types.P_GRAVEBUSTER
+var P_HYPNOSHROOM = types.P_HYPNOSHROOM
+var P_ICESHROOM = types.P_ICESHROOM
+var P_JALAPENO = types.P_JALAPENO
+var P_LILYPAD = types.P_LILYPAD
+var P_PEASHOOTER = types.P_PEASHOOTER
+var P_POTATOMINE = types.P_POTATOMINE
+var P_PUFFSHROOM = types.P_PUFFSHROOM
+var P_PUMPKIN = types.P_PUMPKIN
+var P_REPEATER = types.P_REPEATER
+var P_SCAREDY = types.P_SCAREDY
+var P_SEASHROOM = types.P_SEASHROOM
+var P_SNOWPEA = types.P_SNOWPEA
+var P_SPIKEWEED = types.P_SPIKEWEED
+var P_SQUASH = types.P_SQUASH
+var P_STARFRUIT = types.P_STARFRUIT
+var P_SUNFLOWER = types.P_SUNFLOWER
+var P_SUNSHROOM = types.P_SUNSHROOM
+var P_TALLNUT = types.P_TALLNUT
+var P_TANGLEKLEP = types.P_TANGLEKLEP
+var P_THREEPEATER = types.P_THREEPEATER
+var P_TORCHWOOD = types.P_TORCHWOOD
+var P_WALLNUT = types.P_WALLNUT
+var PF_ASH = types.PF_ASH
+var PF_GROUND = types.PF_GROUND
+var PF_SHOOTER = types.PF_SHOOTER
+var PF_SLEEP = types.PF_SLEEP
+var PF_SUN = types.PF_SUN
+var PF_UNDER = types.PF_UNDER
+var PF_WALL = types.PF_WALL
+var PF_WATER = types.PF_WATER
+var PLANT_N = types.PLANT_N
+var ST_ATK = types.ST_ATK
+var ST_AWARD = types.ST_AWARD
+var ST_CHOOSE = types.ST_CHOOSE
+var ST_DIGEST = types.ST_DIGEST
+var ST_HELP = types.ST_HELP
+var ST_IDLE = types.ST_IDLE
+var ST_INIT = types.ST_INIT
+var ST_LEVELS = types.ST_LEVELS
+var ST_LOSE = types.ST_LOSE
+var ST_MENU = types.ST_MENU
+var ST_PAUSE = types.ST_PAUSE
+var ST_PLAY = types.ST_PLAY
+var ST_SLEEP = types.ST_SLEEP
+var ST_WIN = types.ST_WIN
+var ST_WORK = types.ST_WORK
+var Z_BUCKET = types.Z_BUCKET
+var Z_CONE = types.Z_CONE
+var Z_DOOR = types.Z_DOOR
+var Z_DUCKY = types.Z_DUCKY
+var Z_DUCKY_BUCKET = types.Z_DUCKY_BUCKET
+var Z_DUCKY_CONE = types.Z_DUCKY_CONE
+var Z_FLAG = types.Z_FLAG
+var Z_FOOTBALL = types.Z_FOOTBALL
+var Z_NEWSPAPER = types.Z_NEWSPAPER
+var Z_NORMAL = types.Z_NORMAL
+var Z_POLE = types.Z_POLE
+var Z_SNORKEL = types.Z_SNORKEL
+var Z_ZOMBONI = types.Z_ZOMBONI
+var ZF_ICE_IMMUNE = types.ZF_ICE_IMMUNE
+var ZF_NEWSPAPER = types.ZF_NEWSPAPER
+var ZF_POLE = types.ZF_POLE
+var ZF_SNORKEL = types.ZF_SNORKEL
+var ZF_SWIM = types.ZF_SWIM
+var ZF_WATER = types.ZF_WATER
+var ZF_ZOMBONI = types.ZF_ZOMBONI
+var ZOMBIE_N = types.ZOMBIE_N
+var ZS_ATK = types.ZS_ATK
+var ZS_DIE = types.ZS_DIE
+var ZS_FREEZE = types.ZS_FREEZE
+var ZS_WALK = types.ZS_WALK
+
+var A_BOOMDIE = art.A_BOOMDIE
+var A_BOWL1 = art.A_BOWL1
+var A_BOWL2 = art.A_BOWL2
+var A_BOWL3 = art.A_BOWL3
+var A_BUCKET_ATK = art.A_BUCKET_ATK
+var A_BUCKET_WALK = art.A_BUCKET_WALK
+var A_CHERRY = art.A_CHERRY
+var A_CHOMPER = art.A_CHOMPER
+var A_CHOMPER_ATK = art.A_CHOMPER_ATK
+var A_CHOMPER_DIG = art.A_CHOMPER_DIG
+var A_COFFEEBEAN = art.A_COFFEEBEAN
+var A_CONE_ATK = art.A_CONE_ATK
+var A_CONE_WALK = art.A_CONE_WALK
+var A_DB_ATK = art.A_DB_ATK
+var A_DB_SWIM = art.A_DB_SWIM
+var A_DB_WALK = art.A_DB_WALK
+var A_DC_ATK = art.A_DC_ATK
+var A_DC_SWIM = art.A_DC_SWIM
+var A_DC_WALK = art.A_DC_WALK
+var A_DOOMSHROOM = art.A_DOOMSHROOM
+var A_DOOMSHROOM_B = art.A_DOOMSHROOM_B
+var A_DOOMSHROOM_S = art.A_DOOMSHROOM_S
+var A_DOOR_ATK = art.A_DOOR_ATK
+var A_DOOR_WALK = art.A_DOOR_WALK
+var A_DUCK_ATK = art.A_DUCK_ATK
+var A_DUCK_DIE = art.A_DUCK_DIE
+var A_DUCK_LH = art.A_DUCK_LH
+var A_DUCK_SWIM = art.A_DUCK_SWIM
+var A_DUCK_WALK = art.A_DUCK_WALK
+var A_FB_ATK = art.A_FB_ATK
+var A_FB_DIE = art.A_FB_DIE
+var A_FB_HELM = art.A_FB_HELM
+var A_FB_HELM_ATK = art.A_FB_HELM_ATK
+var A_FB_LH = art.A_FB_LH
+var A_FB_LH_ATK = art.A_FB_LH_ATK
+var A_FB_WALK = art.A_FB_WALK
+var A_FIRE = art.A_FIRE
+var A_FLAG_ATK = art.A_FLAG_ATK
+var A_FLAG_LH = art.A_FLAG_LH
+var A_FLAG_LH_ATK = art.A_FLAG_LH_ATK
+var A_FLAG_WALK = art.A_FLAG_WALK
+var A_FUME = art.A_FUME
+var A_FUMESHROOM = art.A_FUMESHROOM
+var A_FUMESHROOM_A = art.A_FUMESHROOM_A
+var A_FUMESHROOM_S = art.A_FUMESHROOM_S
+var A_GARLIC = art.A_GARLIC
+var A_GARLIC_C1 = art.A_GARLIC_C1
+var A_GARLIC_C2 = art.A_GARLIC_C2
+var A_GRAVE = art.A_GRAVE
+var A_GRAVEBUSTER = art.A_GRAVEBUSTER
+var A_HOLE = art.A_HOLE
+var A_HYPNOSHROOM = art.A_HYPNOSHROOM
+var A_HYPNOSHROOM_S = art.A_HYPNOSHROOM_S
+var A_ICE = art.A_ICE
+var A_ICESHROOM = art.A_ICESHROOM
+var A_ICESHROOM_S = art.A_ICESHROOM_S
+var A_ICESHROOM_SN = art.A_ICESHROOM_SN
+var A_JALAPENO = art.A_JALAPENO
+var A_JALAPENO_B = art.A_JALAPENO_B
+var A_LILYPAD = art.A_LILYPAD
+var A_NEWS_ATK = art.A_NEWS_ATK
+var A_NEWS_DIE = art.A_NEWS_DIE
+var A_NEWS_LH = art.A_NEWS_LH
+var A_NEWS_LH_ATK = art.A_NEWS_LH_ATK
+var A_NEWS_NP = art.A_NEWS_NP
+var A_NEWS_NP_ATK = art.A_NEWS_NP_ATK
+var A_NEWS_RIP = art.A_NEWS_RIP
+var A_NEWS_WALK = art.A_NEWS_WALK
+var A_PEA = art.A_PEA
+var A_PEA_BOOM = art.A_PEA_BOOM
+var A_PEA_ICE = art.A_PEA_ICE
+var A_PEASHOOTER = art.A_PEASHOOTER
+var A_POLE_AFTER = art.A_POLE_AFTER
+var A_POLE_ATK = art.A_POLE_ATK
+var A_POLE_DIE = art.A_POLE_DIE
+var A_POLE_JUMP = art.A_POLE_JUMP
+var A_POLE_LH = art.A_POLE_LH
+var A_POLE_LH_ATK = art.A_POLE_LH_ATK
+var A_POLE_WALK = art.A_POLE_WALK
+var A_POTATO = art.A_POTATO
+var A_POTATO_B = art.A_POTATO_B
+var A_POTATO_INIT = art.A_POTATO_INIT
+var A_PUFFSHROOM = art.A_PUFFSHROOM
+var A_PUFFSHROOM_S = art.A_PUFFSHROOM_S
+var A_PUMPKIN = art.A_PUMPKIN
+var A_PUMPKIN_C1 = art.A_PUMPKIN_C1
+var A_PUMPKIN_C2 = art.A_PUMPKIN_C2
+var A_REPEATER = art.A_REPEATER
+var A_SCAREDY = art.A_SCAREDY
+var A_SCAREDY_C = art.A_SCAREDY_C
+var A_SCAREDY_S = art.A_SCAREDY_S
+var A_SEASHROOM = art.A_SEASHROOM
+var A_SEASHROOM_S = art.A_SEASHROOM_S
+var A_SNK_ATK = art.A_SNK_ATK
+var A_SNK_DIE = art.A_SNK_DIE
+var A_SNK_DIVE = art.A_SNK_DIVE
+var A_SNK_FLOAT = art.A_SNK_FLOAT
+var A_SNK_JUMP = art.A_SNK_JUMP
+var A_SNK_LH = art.A_SNK_LH
+var A_SNK_LH_ATK = art.A_SNK_LH_ATK
+var A_SNK_SINK = art.A_SNK_SINK
+var A_SNK_WALK = art.A_SNK_WALK
+var A_SNOWPEA = art.A_SNOWPEA
+var A_SPIKEWEED = art.A_SPIKEWEED
+var A_SPORE = art.A_SPORE
+var A_SPORE_S = art.A_SPORE_S
+var A_SQUASH = art.A_SQUASH
+var A_SQUASH_AIM = art.A_SQUASH_AIM
+var A_SQUASH_ATK = art.A_SQUASH_ATK
+var A_STAR = art.A_STAR
+var A_STARFRUIT = art.A_STARFRUIT
+var A_SUN = art.A_SUN
+var A_SUNFLOWER = art.A_SUNFLOWER
+var A_SUNSHROOM = art.A_SUNSHROOM
+var A_SUNSHROOM_B = art.A_SUNSHROOM_B
+var A_SUNSHROOM_S = art.A_SUNSHROOM_S
+var A_TALLNUT = art.A_TALLNUT
+var A_TALLNUT_C1 = art.A_TALLNUT_C1
+var A_TALLNUT_C2 = art.A_TALLNUT_C2
+var A_TANGLEKLEP = art.A_TANGLEKLEP
+var A_TANGLEKLEP_S = art.A_TANGLEKLEP_S
+var A_THREEPEATER = art.A_THREEPEATER
+var A_TORCHWOOD = art.A_TORCHWOOD
+var A_WALLNUT = art.A_WALLNUT
+var A_WALLNUT_C1 = art.A_WALLNUT_C1
+var A_WALLNUT_C2 = art.A_WALLNUT_C2
+var A_Z_ATK = art.A_Z_ATK
+var A_Z_DIE = art.A_Z_DIE
+var A_Z_HEAD = art.A_Z_HEAD
+var A_Z_LH = art.A_Z_LH
+var A_Z_LH_ATK = art.A_Z_LH_ATK
+var A_Z_WALK = art.A_Z_WALK
+var A_ZON_BOOM = art.A_ZON_BOOM
+var A_ZON_D1 = art.A_ZON_D1
+var A_ZON_D2 = art.A_ZON_D2
+var A_ZON_DIE = art.A_ZON_DIE
+var A_ZON_WALK = art.A_ZON_WALK
+// 数据表别名
+var PNM  = types.PLANT_NAME
+var PCRD = types.PLANT_CARD
+var PC   = types.PLANT_COST
+var PCD  = types.PLANT_CD
+var PHP  = types.PLANT_HP
+var PFL  = types.PLANT_FLAG
+var ZNM  = types.Z_NAME
+var ZBD  = types.Z_BODY
+var ZH1  = types.Z_HAT1
+var ZH2  = types.Z_HAT2
+var ZSP  = types.Z_SPEED
+var ZWD  = types.Z_WIDTH
+var ZCT  = types.Z_COST
+var ZWT  = types.Z_WEIGHT
+var ZFG  = types.Z_FLAGS
+var LVBG = types.LV_BG
+var LVFL = types.LV_FLAGS
+var LVSUN= types.LV_SUN
+var LVGR = types.LV_GRAVE
+var LVTI = types.LV_TITLE
+
+// ==================== 布局常量 ====================
+
+var WIN_W = 800
+var WIN_H = 600
+var BG_OX = 150.0        // 背景图左移量（显示 1400 宽图中的 x∈[150,950]；草坪在图中 x≈250~1000）
+
+// 保龄球坚果（小游戏用，特殊植物 id）
+var P_BOWL1 = 100
+var P_BOWL2 = 101
+var P_BOWL3 = 102
+
+// 子弹种类
+var BK_PEA    = 0
+var BK_ICE    = 1
+var BK_FIRE   = 2
+var BK_SPORE  = 3
+var BK_SPORES = 4
+var BK_STAR   = 5
+var BK_FUME   = 6
+
+// 伤害类型（对齐 zombie.py 的 setDamage）
+var DT_PEA    = 0        // 豌豆类：二类→一类→本体
+var DT_COMMON = 1        // 无视二类
+var DT_RANGE  = 2        // 范围伤（双层）
+var DT_ASH    = 3        // 灰烬：只打本体
+var DT_BOWL   = 4        // 保龄球
+
+var LOADING = 99         // 加载中状态
+
+// ==================== 工具 ====================
+
+func cellCX(Game g, int col): float {
+    return g.mapOX + _float(col * g.cellW) + _float(g.cellW) * 0.5
+}
+
+func cellFY(Game g, int row): float {
+    return g.mapOY + _float(row * g.cellH) + _float(g.cellH) * 0.6
+}
+
+func colAt(Game g, float x): int {
+    var c = _int((x - g.mapOX) / _float(g.cellW))
+    if c < 0 { c = 0 }
+    if c > 8 { c = 8 }
+    return c
+}
+
+func rowAt(Game g, float y): int {
+    var r = _int((y - g.mapOY) / _float(g.cellH))
+    if r < 0 { r = 0 }
+    if r > g.rows - 1 { r = g.rows - 1 }
+    return r
+}
+
+func inRect(float x, float y, float rx, float ry, float rw, float rh): bool {
+    return x >= rx and x <= rx + rw and y >= ry and y <= ry + rh
+}
+
+func isWaterCell(Game g, int row): bool {
+    return g.isPool and (row == 2 or row == 3)
+}
+
+// ==================== 存档 ====================
+
+func savePath(): string {
+    return dirs.script_dir() + "/pvz2_save.txt"
+}
+
+func loadSave(Game g) {
+    g.levelNum = 1
+    g.lgNum = 1
+    g.advComplete = 0
+    g.lgComplete = 0
+    g.volume = 0.5
+    var p = savePath()
+    if not files.exists(p) { return }
+    var txt = files.read(p)
+    for txt.split("\n") to line {
+        var kv = line.split("=")
+        if kv.len() < 2 { continue }
+        var k = kv[0]
+        var v = _int(kv[1])
+        if k == "level" { g.levelNum = v }
+        else if k == "lg" { g.lgNum = v }
+        else if k == "adv" { g.advComplete = v }
+        else if k == "lgc" { g.lgComplete = v }
+        else if k == "vol" { g.volume = _float(v) / 100.0 }
+    }
+    if g.levelNum < 1 or g.levelNum > LV_COUNT { g.levelNum = 1 }
+    if g.lgNum < 1 or g.lgNum > 6 { g.lgNum = 1 }
+    if g.volume < 0.0 { g.volume = 0.0 }
+    if g.volume > 1.0 { g.volume = 1.0 }
+}
+
+func saveGame(Game g) {
+    var s = "level=" + g.levelNum + "\n"
+    s = s + "lg=" + g.lgNum + "\n"
+    s = s + "adv=" + g.advComplete + "\n"
+    s = s + "lgc=" + g.lgComplete + "\n"
+    s = s + "vol=" + _int(g.volume * 100.0) + "\n"
+    files.write(savePath(), s)
+}
+
+// ==================== 音频 ====================
+
+func initAudio(Game g) {
+    var sd = dirs.res_dir() + "/sound/"
+    var md = dirs.res_dir() + "/music/"
+    g.bgm = audio.createSound(md + "intro.ogg")
+    g.audioOk = g.bgm.ok
+    if not g.audioOk {
+        print("[警告] 音频初始化失败，静音运行")
+        return
+    }
+    g.bgm.setLooping(true)
+    g.bgm.setVolume(g.volume)
+    g.bgm.play()
+    g.sfxPlant   = audio.createSfx(sd + "plant.ogg", 4, 0.5)
+    g.sfxShoot   = audio.createSfx(sd + "shoot.ogg", 6, 0.3)
+    g.sfxSplat   = audio.createSfx(sd + "bulletExplode.ogg", 6, 0.25)
+    g.sfxCherry  = audio.createSfx(sd + "bomb.ogg", 3, 0.6)
+    g.sfxShovel  = audio.createSfx(sd + "shovel.ogg", 3, 0.45)
+    g.sfxCoin    = audio.createSfx(sd + "collectSun.ogg", 5, 0.4)
+    g.sfxGroan   = audio.createSfx(sd + "zombieVoice.ogg", 4, 0.25)
+    g.sfxPop     = audio.createSfx(sd + "scream.ogg", 4, 0.35)
+    g.sfxAwooga  = audio.createSfx(sd + "evillaugh.ogg", 2, 0.5)
+    g.sfxMower   = audio.createSfx(sd + "carWalking.ogg", 2, 0.5)
+    g.sfxChomp   = audio.createSfx(sd + "bigchomp.ogg", 4, 0.2)
+    g.sfxBuzzer  = audio.createSfx(sd + "cannotChooseWarning.ogg", 3, 0.35)
+    g.sfxFreeze  = audio.createSfx(sd + "freeze.ogg", 3, 0.55)
+    g.sfxFire    = audio.createSfx(sd + "firepea.ogg", 4, 0.4)
+    g.sfxTap     = audio.createSfx(sd + "tap.ogg", 4, 0.4)
+    g.sfxClick   = audio.createSfx(sd + "buttonclick.ogg", 4, 0.45)
+    g.sfxWin     = audio.createSfx(sd + "win.ogg", 2, 0.6)
+    g.sfxLose    = audio.createSfx(sd + "lose.ogg", 2, 0.6)
+    g.sfxHuge    = audio.createSfx(sd + "hugeWaveApproching.ogg", 2, 0.6)
+    g.sfxPotato  = audio.createSfx(sd + "potatomine.ogg", 3, 0.5)
+    g.sfxSquash  = audio.createSfx(sd + "squashing.ogg", 3, 0.5)
+    g.sfxFume    = audio.createSfx(sd + "fume.ogg", 4, 0.3)
+    g.sfxHypno   = audio.createSfx(sd + "hypnoed.ogg", 3, 0.5)
+    g.sfxZomboni = audio.createSfx(sd + "zomboni.ogg", 3, 0.5)
+    g.sfxWater   = audio.createSfx(sd + "zombieEnteringWater.ogg", 4, 0.4)
+    g.sfxNewspaper = audio.createSfx(sd + "newspaperRip.ogg", 3, 0.45)
+    g.sfxBoom    = audio.createSfx(sd + "doomshroom.ogg", 3, 0.6)
+}
+
+func sfx(Game g, Sfx s) {
+    if g.audioOk and not g.muted { s.play() }
+}
+
+func playBgm(Game g, string name) {
+    if not g.audioOk { return }
+    var md = dirs.res_dir() + "/music/"
+    g.bgm.stop()
+    g.bgm = audio.createSound(md + name)
+    if g.bgm.ok {
+        g.bgm.setLooping(true)
+        g.bgm.setVolume(if g.muted then 0.0 else g.volume)
+        g.bgm.play()
+    }
+}
+
+func stopBgm(Game g) {
+    if g.audioOk { g.bgm.stop() }
+}
+
+// ==================== 关卡配置 ====================
+
+func addZ(Game g, int t) {
+    g.zAllowed.add(t)
+    g.zWeight.add(ZWT[t])
+}
+
+// 冒险模式僵尸池（对齐 Python LEVEL_MAP_DATA 的 INCLUDED_ZOMBIES）
+func setupAdventurePool(Game g, int lv) {
+    g.zAllowed = []
+    g.zWeight = []
+    g.inevWave = []
+    g.inevType = []
+    if lv == 1 or lv == 2 or lv == 3 { addZ(g, Z_NORMAL) }
+    else if lv == 4 {
+        addZ(g, Z_NORMAL); addZ(g, Z_CONE); addZ(g, Z_POLE)
+    } else if lv == 5 {
+        addZ(g, Z_NORMAL); addZ(g, Z_CONE); addZ(g, Z_POLE); addZ(g, Z_BUCKET)
+    } else if lv == 6 {
+        addZ(g, Z_NORMAL); addZ(g, Z_NEWSPAPER)
+    } else if lv == 7 {
+        addZ(g, Z_NORMAL); addZ(g, Z_DOOR)
+    } else if lv == 8 {
+        addZ(g, Z_NORMAL); addZ(g, Z_NEWSPAPER); addZ(g, Z_CONE)
+        addZ(g, Z_BUCKET); addZ(g, Z_DOOR); addZ(g, Z_FOOTBALL)
+        g.inevWave.add(10); g.inevType.add(Z_NEWSPAPER)
+        g.inevWave.add(20); g.inevType.add(Z_DOOR)
+        g.inevWave.add(30); g.inevType.add(Z_FOOTBALL)
+    } else if lv == 9 {
+        addZ(g, Z_NORMAL); addZ(g, Z_BUCKET); addZ(g, Z_CONE)
+    } else if lv == 10 {
+        addZ(g, Z_NORMAL); addZ(g, Z_BUCKET); addZ(g, Z_CONE); addZ(g, Z_SNORKEL)
+        g.inevWave.add(30); g.inevType.add(Z_SNORKEL)
+    } else if lv == 11 {
+        addZ(g, Z_NORMAL); addZ(g, Z_ZOMBONI)
+        g.inevWave.add(30); g.inevType.add(Z_ZOMBONI)
+    } else if lv == 12 {
+        addZ(g, Z_NORMAL); addZ(g, Z_ZOMBONI); addZ(g, Z_BUCKET)
+        addZ(g, Z_CONE); addZ(g, Z_SNORKEL)
+        g.inevWave.add(40); g.inevType.add(Z_ZOMBONI)
+    } else {
+        addZ(g, Z_NORMAL); addZ(g, Z_NEWSPAPER); addZ(g, Z_ZOMBONI)
+        addZ(g, Z_FOOTBALL); addZ(g, Z_CONE); addZ(g, Z_BUCKET)
+    }
+}
+
+// 大决战预设卡组（10 张）
+func presetDeck(Game g, int which) {
+    g.chosen = []
+    if which == 0 {
+        // 昼
+        g.chosen.add(P_SUNFLOWER); g.chosen.add(P_PEASHOOTER); g.chosen.add(P_REPEATER)
+        g.chosen.add(P_SNOWPEA); g.chosen.add(P_WALLNUT); g.chosen.add(P_CHERRY)
+        g.chosen.add(P_POTATOMINE); g.chosen.add(P_SQUASH); g.chosen.add(P_TORCHWOOD)
+        g.chosen.add(P_JALAPENO)
+    } else if which == 1 {
+        // 夜
+        g.chosen.add(P_SUNFLOWER); g.chosen.add(P_PUFFSHROOM); g.chosen.add(P_FUMESHROOM)
+        g.chosen.add(P_SCAREDY); g.chosen.add(P_WALLNUT); g.chosen.add(P_POTATOMINE)
+        g.chosen.add(P_COFFEEBEAN); g.chosen.add(P_ICESHROOM); g.chosen.add(P_DOOMSHROOM)
+        g.chosen.add(P_GRAVEBUSTER)
+    } else {
+        // 池
+        g.chosen.add(P_LILYPAD); g.chosen.add(P_SUNFLOWER); g.chosen.add(P_PEASHOOTER)
+        g.chosen.add(P_REPEATER); g.chosen.add(P_SNOWPEA); g.chosen.add(P_WALLNUT)
+        g.chosen.add(P_SEASHROOM); g.chosen.add(P_TANGLEKLEP); g.chosen.add(P_SQUASH)
+        g.chosen.add(P_CHERRY)
+    }
+    g.cardCd = []
+    for 0 : PLANT_N - 1 to i { g.cardCd.add(0) }
+}
+
+func levelBgmName(Game g): string {
+    if g.isNight { return "nightLevel.ogg" }
+    if g.isPool { return "poolLevel.ogg" }
+    if g.bgType == BG_FOG { return "fogLevel.ogg" }
+    return "dayLevel.ogg"
+}
+
+// 选卡完成 → 进入战斗
+func startPlay(Game g) {
+    g.sub = 1
+    g.state = ST_PLAY
+    setupMowers(g)
+    if g.graveGrade > 0 { setupGraves(g) }
+    playBgm(g, levelBgmName(g))
+}
+
+// 自检用：无视阳光/冷却直接放一棵植物
+func autoPlace(Game g, int row, int col, int t) {
+    if not canPlantAt(g, row, col, t) { return }
+    var p = new Plant()
+    p.ptype = t
+    p.row = row
+    p.col = col
+    p.x = cellCX(g, col)
+    p.y = cellFY(g, row)
+    p.maxHp = PHP[t]
+    p.hp = p.maxHp
+    p.alive = true
+    p.aframe = _float(rands.ints(0, 20))
+    if isSleepPlant(t) and not g.isNight { p.state = ST_SLEEP }
+    if t == P_POTATOMINE { p.state = ST_INIT; p.timer = 0 }
+    g.plants.add(p)
+}
+
+// 初始化一关
+func initLevel(Game g, int mode, int idx) {
+    g.mode = mode
+    if mode == MODE_ADV { g.level = idx } else { g.lg = idx }
+
+    // 场地配置
+    var bg = BG_DAY
+    var flags = 1
+    var sun = 50
+    var grave = 0
+    var bar = BAR_STATIC
+    g.hasShovel = true
+    if mode == MODE_ADV {
+        bg = LVBG[idx - 1]
+        flags = LVFL[idx - 1]
+        sun = LVSUN[idx - 1]
+        grave = LVGR[idx - 1]
+        setupAdventurePool(g, idx)
+    } else {
+        // 小游戏
+        if idx == 1 { bg = BG_DAY; flags = 1; bar = BAR_BOWLING; g.hasShovel = false }
+        else if idx == 2 { bg = BG_DAY; flags = 2; bar = BAR_BOWLING; g.hasShovel = false }
+        else if idx == 3 { bg = BG_DAY; flags = 2 }
+        else if idx == 4 { bg = BG_NIGHT; flags = 2; grave = 2 }
+        else if idx == 5 { bg = BG_POOL; flags = 2 }
+        else { bg = BG_DAY; flags = 2; bar = BAR_MOVE }
+        g.zAllowed = []
+        g.zWeight = []
+        g.inevWave = []
+        g.inevType = []
+        if idx == 1 { addZ(g, Z_NORMAL); addZ(g, Z_CONE) }
+        else if idx == 2 { addZ(g, Z_NORMAL); addZ(g, Z_CONE); addZ(g, Z_BUCKET) }
+        else if idx == 3 { addZ(g, Z_NORMAL); addZ(g, Z_CONE); addZ(g, Z_POLE) }
+        else if idx == 4 { addZ(g, Z_NORMAL); addZ(g, Z_NEWSPAPER); addZ(g, Z_DOOR) }
+        else if idx == 5 { addZ(g, Z_NORMAL); addZ(g, Z_CONE); addZ(g, Z_BUCKET); addZ(g, Z_SNORKEL) }
+        else {
+            // 传送带：全植物
+            addZ(g, Z_NORMAL); addZ(g, Z_CONE); addZ(g, Z_POLE); addZ(g, Z_BUCKET)
+        }
+    }
+
+    g.bgType = bg
+    g.barType = bar
+    g.numFlags = flags
+    g.initSun = sun
+    g.graveGrade = grave
+    g.isNight = (bg == BG_NIGHT)
+    g.isPool = (bg == BG_POOL or bg == BG_FOG)
+
+    // 网格（对齐背景图草坪：图中草坪 x≈250~1000、y≈64~575；BG_OX=150 后屏幕上草坪 x≈100~850）
+    if g.isPool {
+        g.rows = 6; g.cellW = 77; g.cellH = 85
+        g.mapOX = 100.0; g.mapOY = 90.0
+    } else {
+        g.rows = 5; g.cellW = 77; g.cellH = 97
+        g.mapOX = 100.0; g.mapOY = 90.0
+    }
+    g.rowWalk = []
+    g.rowPlant = []
+    for 0 : g.rows - 1 to r {
+        var walk = 1
+        var plant = 1
+        if bg == BG_SINGLE { if r != 2 { walk = 0; plant = 0 } }
+        if bg == BG_TRIPLE { if r < 1 or r > 3 { walk = 0; plant = 0 } }
+        g.rowWalk.add(walk)
+        g.rowPlant.add(plant)
+    }
+
+    // 清空实体
+    g.plants = []
+    g.zombies = []
+    g.bullets = []
+    g.suns = []
+    g.parts = []
+    g.floats = []
+    g.graves = []
+    g.holes = []
+    g.ices = []
+    g.mowers = []
+    g.belt = []
+    g.beltTimer = 0
+
+    // 经济
+    g.sun = sun
+    g.produceSun = (not g.isNight) and bar == BAR_STATIC
+    g.skyTimer = 0
+    g.fallenSun = 0
+
+    // 波次
+    g.wave = 0
+    g.waveState = 0
+    g.killed = 0
+    g.endTimer = 0
+    g.graveGrown = false
+    g.poolSpawned = false
+    g.clearT = 0
+    g.waveTimer = if bar == BAR_STATIC then 1080 else 360
+    // 自检钩子：PVZFIRSTWAVE=<帧> 压缩首波等待
+    var eFw = _env("PVZFIRSTWAVE")
+    if eFw != null { g.waveTimer = _int(_str(eFw)) }
+    buildWaves(g)
+
+    // 交互
+    g.selCard = -1
+    g.shovelMode = false
+    g.showMenu = false
+    g.chosen = []
+    g.cardCd = []
+    for 0 : PLANT_N - 1 to i { g.cardCd.add(0) }
+
+    if bar == BAR_STATIC and mode == MODE_ADV {
+        g.sub = 0
+        g.state = ST_CHOOSE
+        playBgm(g, "chooseYourSeeds.ogg")
+    } else {
+        if bar == BAR_STATIC { presetDeck(g, idx - 3) }
+        g.sub = 1
+        g.state = ST_PLAY
+        setupMowers(g)
+        if grave > 0 { setupGraves(g) }
+        playBgm(g, levelBgmName(g))
+    }
+    setLevelBg(g)
+}
+
+// 生成波次表（对齐 createWaves）
+func buildWaves(Game g) {
+    g.waves = []
+    var total = g.numFlags * 10
+    for 1 : total to w {
+        var vol = _int(_int(_float(w) * 0.8) / 2.0) + 1
+        Array[int] list = []
+        if w % 10 == 0 {
+            vol = _int(_float(vol) * 2.5)
+            list.add(Z_FLAG)
+            vol = vol - 1
+        }
+        if g.barType != BAR_STATIC { vol = vol + 2 }
+        var k = 0
+        for g.inevWave to iw {
+            if iw == w {
+                list.add(g.inevType[k])
+                vol = vol - ZCT[g.inevType[k]]
+            }
+            k = k + 1
+        }
+        var minCost = 99
+        for g.zAllowed to t { if ZCT[t] < minCost { minCost = ZCT[t] } }
+        var guard = 0
+        while vol >= minCost and list.len() < 50 and guard < 300 {
+            guard = guard + 1
+            var t = pickWeighted(g)
+            if g.isPool {
+                if w == 4 { t = toWaterZombie(t) }
+                else if w > 4 and rands.ints(1, 3) == 1 { t = toWaterZombie(t) }
+                else if w < 4 and isWaterOnly(t) { continue }
+            }
+            if ZCT[t] <= vol {
+                list.add(t)
+                vol = vol - ZCT[t]
+            }
+        }
+        g.waves.add(list)
+    }
+}
+
+func isWaterOnly(int t): bool {
+    if t == Z_SNORKEL or t == Z_DUCKY or t == Z_DUCKY_CONE or t == Z_DUCKY_BUCKET { return true }
+    return false
+}
+
+func toWaterZombie(int t): int {
+    if t == Z_NORMAL { return Z_DUCKY }
+    if t == Z_CONE { return Z_DUCKY_CONE }
+    if t == Z_BUCKET { return Z_DUCKY_BUCKET }
+    return t
+}
+
+func pickWeighted(Game g): int {
+    var sum = 0
+    for g.zWeight to w { sum = sum + w }
+    if sum <= 0 { return g.zAllowed[0] }
+    var roll = rands.ints(0, sum - 1)
+    var acc = 0
+    var i = 0
+    for g.zAllowed to t {
+        acc = acc + g.zWeight[i]
+        if roll < acc { return t }
+        i = i + 1
+    }
+    return g.zAllowed[0]
+}
+
+func setupMowers(Game g) {
+    g.mowers = []
+    for 0 : g.rows - 1 to r {
+        var m = new Mower()
+        m.row = r
+        m.x = g.mapOX - 80.0
+        m.y = cellFY(g, r) - 25.0
+        m.active = false
+        m.alive = true
+        g.mowers.add(m)
+    }
+}
+
+func setupGraves(Game g) {
+    var n = 4
+    if g.graveGrade == 1 { n = 4 }
+    else if g.graveGrade == 2 { n = 7 }
+    else if g.graveGrade == 3 { n = 11 }
+    var tries = 0
+    while n > 0 and tries < 200 {
+        tries = tries + 1
+        var col = rands.ints(4, 8)
+        var row = rands.ints(0, g.rows - 1)
+        if g.rowPlant[row] == 0 { continue }
+        if graveAt(g, row, col) >= 0 { continue }
+        var gr = new Grave()
+        gr.row = row
+        gr.col = col
+        gr.x = cellCX(g, col)
+        gr.y = cellFY(g, row)
+        gr.hp = 300.0
+        gr.alive = true
+        g.graves.add(gr)
+        n = n - 1
+    }
+}
+
+func graveAt(Game g, int row, int col): int {
+    var i = 0
+    for g.graves to gr {
+        if gr.alive and gr.row == row and gr.col == col { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+// ==================== 生成器 ====================
+
+func spawnZombie(Game g, int ztype, int row) {
+    var z = new Zombie()
+    z.ztype = ztype
+    z.row = row
+    var sx = 830.0
+    if (ZFG[ztype] & ZF_SWIM) != 0 or ztype == Z_SNORKEL {
+        sx = 830.0 + _float(rands.ints(0, 10))
+    } else {
+        sx = 830.0 + _float(rands.ints(-20, 20))
+    }
+    if g.wave > 0 and g.wave % 10 == 0 { sx = sx + 40.0 }
+    z.x = sx
+    z.y = cellFY(g, row)
+    z.hp = ZBD[ztype]
+    z.maxHp = z.hp
+    z.hat1 = ZH1[ztype]
+    z.hat1Max = z.hat1
+    z.hat2 = ZH2[ztype]
+    z.hat2Max = z.hat2
+    z.speed = ZSP[ztype]
+    z.width = ZWD[ztype]
+    z.state = ZS_WALK
+    z.alive = true
+    z.aframe = _float(rands.ints(0, 40))
+    if isWaterCell(g, row) {
+        if (ZFG[ztype] & ZF_SWIM) != 0 { z.inWater = true }
+        if ztype == Z_SNORKEL {
+            z.diving = true
+            z.transT = 36
+            z.transAnim = A_SNK_JUMP
+        }
+    }
+    g.zombies.add(z)
+}
+
+func spawnZombieAt(Game g, int ztype, int row, int col) {
+    spawnZombie(g, ztype, row)
+    var n = g.zombies.len()
+    if n > 0 {
+        g.zombies[n - 1].x = cellCX(g, col) - ZWD[ztype] * 0.5
+    }
+}
+
+func spawnSun(Game g, float x, float y, float ty, float value) {
+    var s = new Sun()
+    s.x = x
+    s.y = y
+    s.ty = ty
+    s.value = value
+    s.falling = true
+    s.alive = true
+    s.life = 600
+    g.suns.add(s)
+}
+
+func addParticles(Game g, float x, float y, int n, int c) {
+    if g.parts.len() > 400 { return }
+    for 0 : n - 1 to i {
+        var p = new Particle()
+        var a = _float(rands.ints(0, 359)) * 3.14159265 / 180.0
+        var sp = _float(rands.ints(10, 45)) / 10.0
+        p.x = x; p.y = y
+        p.vx = maths.cos(a) * sp
+        p.vy = maths.sin(a) * sp
+        p.size = _float(rands.ints(2, 6))
+        p.life = rands.ints(16, 34)
+        p.maxLife = p.life
+        p.c = c
+        g.parts.add(p)
+    }
+}
+
+func addFloat(Game g, float x, float y, string text, int c) {
+    var f = new FloatText()
+    f.x = x; f.y = y
+    f.text = text
+    f.c = c
+    f.life = 50
+    f.maxLife = 50
+    g.floats.add(f)
+}
+
+func fireBullet(Game g, int kind, int row, float x, float y, float vx, float vy, float dmg, int dtype, int effect, float ty) {
+    var b = new Bullet()
+    b.kind = kind
+    b.row = row
+    b.x = x; b.y = y
+    b.vx = vx; b.vy = vy
+    b.ty = ty
+    b.dmg = dmg
+    b.dmgType = dtype
+    b.effect = effect
+    b.alive = true
+    g.bullets.add(b)
+}
+
+// ==================== 波次 ====================
+
+func countZombies(Game g): int {
+    var n = 0
+    for g.zombies to z {
+        if z.alive and not z.hypno { n = n + 1 }
+    }
+    return n
+}
+
+func pickRow(Game g, int t): int {
+    if isWaterOnly(t) {
+        if g.isPool { return 2 + rands.ints(0, 1) }
+        return rands.ints(0, g.rows - 1)
+    }
+    if g.bgType == BG_SINGLE { return 2 }
+    if g.bgType == BG_TRIPLE { return rands.ints(1, 3) }
+    if g.isPool {
+        var r = rands.ints(0, 3)
+        if r >= 2 { r = r + 2 }
+        return r
+    }
+    return rands.ints(0, g.rows - 1)
+}
+
+func startWave(Game g) {
+    g.wave = g.wave + 1
+    g.waveState = 1
+    g.spawnIdx = 0
+    g.spawnGap = 0
+    if g.wave % 10 == 0 {
+        g.banner = "一大波僵尸正在接近！"
+        g.bannerT = 130
+        sfx(g, g.sfxAwooga)
+        sfx(g, g.sfxHuge)
+    } else {
+        g.banner = "第 " + g.wave + " 波"
+        g.bannerT = 100
+    }
+}
+
+func updateWaves(Game g) {
+    var total = g.numFlags * 10
+    if g.wave >= total {
+        endExtras(g)
+        return
+    }
+    if g.waveState == 0 {
+        g.waveTimer = g.waveTimer - 1
+        if g.waveTimer <= 0 { startWave(g) }
+    } else if g.waveState == 1 {
+        g.spawnGap = g.spawnGap - 1
+        if g.spawnGap <= 0 {
+            if g.spawnIdx < g.waves[g.wave - 1].len() {
+                var t = g.waves[g.wave - 1][g.spawnIdx]
+                g.spawnIdx = g.spawnIdx + 1
+                spawnZombie(g, t, pickRow(g, t))
+                g.spawnGap = 8
+            } else {
+                g.waveState = 2
+                g.clearT = 0
+            }
+        }
+    } else if g.waveState == 2 {
+        g.clearT = g.clearT + 1
+        if countZombies(g) == 0 {
+            var gap = 1500 + rands.ints(0, 360)
+            if g.wave % 10 == 9 { gap = 2700 }
+            if g.barType != BAR_STATIC { gap = 750 + rands.ints(0, 180) }
+            if g.clearT > 240 and g.clearT < 900 { gap = 120 }
+            g.waveState = 0
+            g.waveTimer = gap
+        }
+    }
+}
+
+func growGraves(Game g) {
+    var tries = 0
+    while g.graves.len() < 12 and tries < 200 {
+        tries = tries + 1
+        var col = rands.ints(4, 8)
+        var row = rands.ints(0, g.rows - 1)
+        if g.rowPlant[row] == 0 { continue }
+        if graveAt(g, row, col) >= 0 { continue }
+        var gr = new Grave()
+        gr.row = row
+        gr.col = col
+        gr.x = cellCX(g, col)
+        gr.y = cellFY(g, row)
+        gr.hp = 300.0
+        gr.alive = true
+        g.graves.add(gr)
+    }
+}
+
+func endExtras(Game g) {
+    g.endTimer = g.endTimer + 1
+    if g.isNight {
+        if not g.graveGrown {
+            if g.endTimer > 6 { growGraves(g); g.graveGrown = true }
+        } else if not g.poolSpawned {
+            if g.endTimer > 90 {
+                for g.graves to gr {
+                    if gr.alive {
+                        if rands.ints(0, 1) == 0 { spawnZombieAt(g, Z_NORMAL, gr.row, gr.col) }
+                        else { spawnZombieAt(g, Z_CONE, gr.row, gr.col) }
+                    }
+                }
+                g.poolSpawned = true
+            }
+        }
+    } else if g.isPool {
+        if not g.poolSpawned and g.endTimer > 90 {
+            var n = 0
+            while n < 3 {
+                var row = 2 + rands.ints(0, 1)
+                var col = 5 + rands.ints(0, 3)
+                var r2 = rands.ints(0, 2)
+                var t = Z_DUCKY
+                if r2 == 1 { t = Z_DUCKY_CONE }
+                if r2 == 2 { t = Z_DUCKY_BUCKET }
+                spawnZombieAt(g, t, row, col)
+                n = n + 1
+            }
+            g.poolSpawned = true
+        }
+    }
+}
+
+// ==================== 植物 ====================
+
+func plantAnim(Game g, Plant p): int {
+    var t = p.ptype
+    if t == P_SUNFLOWER { return A_SUNFLOWER }
+    if t == P_PEASHOOTER { return A_PEASHOOTER }
+    if t == P_REPEATER { return A_REPEATER }
+    if t == P_SNOWPEA { return A_SNOWPEA }
+    if t == P_THREEPEATER { return A_THREEPEATER }
+    if t == P_TORCHWOOD { return A_TORCHWOOD }
+    if t == P_LILYPAD { return A_LILYPAD }
+    if t == P_STARFRUIT { return A_STARFRUIT }
+    if t == P_CHERRY { return A_CHERRY }
+    if t == P_COFFEEBEAN { return A_COFFEEBEAN }
+    if t == P_GRAVEBUSTER { return A_GRAVEBUSTER }
+    if t == P_JALAPENO { if p.state == ST_WORK { return A_JALAPENO_B } return A_JALAPENO }
+    if t == P_POTATOMINE {
+        if p.state == ST_INIT { return A_POTATO_INIT }
+        if p.state == ST_WORK { return A_POTATO_B }
+        return A_POTATO
+    }
+    if t == P_SQUASH {
+        if p.state == ST_WORK { return A_SQUASH_ATK }
+        if p.state == ST_ATK { return A_SQUASH_AIM }
+        return A_SQUASH
+    }
+    if t == P_CHOMPER {
+        if p.state == ST_ATK { return A_CHOMPER_ATK }
+        if p.state == ST_DIGEST { return A_CHOMPER_DIG }
+        return A_CHOMPER
+    }
+    if t == P_SPIKEWEED { return A_SPIKEWEED }
+    if t == P_TANGLEKLEP { if p.state == ST_WORK { return A_TANGLEKLEP_S } return A_TANGLEKLEP }
+    if t == P_WALLNUT {
+        if p.hp <= 1333.0 { return A_WALLNUT_C2 }
+        if p.hp <= 2666.0 { return A_WALLNUT_C1 }
+        return A_WALLNUT
+    }
+    if t == P_TALLNUT {
+        if p.hp <= 2666.0 { return A_TALLNUT_C2 }
+        if p.hp <= 5333.0 { return A_TALLNUT_C1 }
+        return A_TALLNUT
+    }
+    if t == P_PUMPKIN {
+        if p.hp <= 1333.0 { return A_PUMPKIN_C2 }
+        if p.hp <= 2666.0 { return A_PUMPKIN_C1 }
+        return A_PUMPKIN
+    }
+    if t == P_GARLIC {
+        if p.hp <= 150.0 { return A_GARLIC_C2 }
+        if p.hp <= 300.0 { return A_GARLIC_C1 }
+        return A_GARLIC
+    }
+    var sleeping = p.state == ST_SLEEP
+    if t == P_PUFFSHROOM { if sleeping { return A_PUFFSHROOM_S } return A_PUFFSHROOM }
+    if t == P_SUNSHROOM {
+        if sleeping { return A_SUNSHROOM_S }
+        if p.big { return A_SUNSHROOM_B }
+        return A_SUNSHROOM
+    }
+    if t == P_FUMESHROOM {
+        if sleeping { return A_FUMESHROOM_S }
+        if p.state == ST_ATK { return A_FUMESHROOM_A }
+        return A_FUMESHROOM
+    }
+    if t == P_SCAREDY {
+        if sleeping { return A_SCAREDY_S }
+        if p.state == ST_ATK { return A_SCAREDY_C }
+        return A_SCAREDY
+    }
+    if t == P_ICESHROOM { if sleeping { return A_ICESHROOM_S } return A_ICESHROOM }
+    if t == P_DOOMSHROOM {
+        if sleeping { return A_DOOMSHROOM_S }
+        if p.state == ST_WORK { return A_DOOMSHROOM_B }
+        return A_DOOMSHROOM
+    }
+    if t == P_HYPNOSHROOM { if sleeping { return A_HYPNOSHROOM_S } return A_HYPNOSHROOM }
+    if t == P_SEASHROOM { if sleeping { return A_SEASHROOM_S } return A_SEASHROOM }
+    if t == P_BOWL1 { return A_BOWL1 }
+    if t == P_BOWL2 { return A_BOWL2 }
+    if t == P_BOWL3 { return A_BOWL3 }
+    return A_SUNFLOWER
+}
+
+func plantW(Game g, Plant p): float {
+    var an = g.anims[plantAnim(g, p)]
+    if an.n <= 0 { return 70.0 }
+    return an.fw[0]
+}
+
+func plantH(Game g, Plant p): float {
+    var an = g.anims[plantAnim(g, p)]
+    if an.n <= 0 { return 70.0 }
+    return an.fh[0]
+}
+
+func plantProtected(Plant p): bool {
+    if p.state == ST_WORK { return true }
+    if p.ptype == P_POTATOMINE and p.state != ST_INIT { return true }
+    if p.ptype == P_SQUASH and p.state != ST_IDLE { return true }
+    return false
+}
+
+func zombieAhead(Game g, int row, float x0, float x1): bool {
+    for g.zombies to z {
+        if not z.alive or z.state == ZS_DIE or z.hypno { continue }
+        if z.row != row { continue }
+        if z.diving { continue }
+        if z.x + z.width > x0 and z.x < x1 { return true }
+    }
+    return false
+}
+
+// ---- 植物行为更新 ----
+
+func updatePlants(Game g) {
+    Array[Plant] live = []
+    for g.plants to p {
+        if not p.alive { continue }
+        if p.hitFlash > 0 { p.hitFlash = p.hitFlash - 1 }
+        var t = p.ptype
+
+        // 向日葵 / 阳光菇：产阳光
+        if t == P_SUNFLOWER or t == P_SUNSHROOM {
+            if t == P_SUNSHROOM {
+                p.sub = p.sub + 1
+                if p.sub > 6000 { p.big = true }
+            }
+            p.timer = p.timer + 1
+            p.aframe = p.aframe + 1.0
+            var need = 1440
+            if not p.armed { need = 1080 }
+            if p.timer >= need {
+                p.timer = 0
+                p.armed = true
+                var v = 25.0
+                if t == P_SUNSHROOM and not p.big { v = 15.0 }
+                spawnSun(g, p.x - 6.0, p.y - 60.0, p.y - 6.0, v)
+            }
+            live.add(p)
+            continue
+        }
+
+        // 豌豆 / 双发 / 寒冰：同行有僵尸才射
+        if t == P_PEASHOOTER or t == P_REPEATER or t == P_SNOWPEA {
+            var has = zombieAhead(g, p.row, p.x - 40.0, 810.0)
+            if has {
+                p.timer = p.timer + 1
+                var need = 84
+                if p.sub == 0 { need = 42 }
+                if p.timer >= need {
+                    p.timer = 0
+                    p.sub = 1
+                    var kind = BK_PEA
+                    var eff = 0
+                    if t == P_SNOWPEA { kind = BK_ICE; eff = 1 }
+                    fireBullet(g, kind, p.row, p.x + 28.0, p.y - 62.0, 8.3, 0.0, 20.0, DT_PEA, eff, p.y - 62.0)
+                    if t == P_REPEATER {
+                        fireBullet(g, kind, p.row, p.x + 46.0, p.y - 62.0, 8.3, 0.0, 20.0, DT_PEA, eff, p.y - 62.0)
+                    }
+                    sfx(g, g.sfxShoot)
+                }
+            } else {
+                p.timer = 0
+                p.sub = 0
+            }
+            p.aframe = p.aframe + 1.0
+            live.add(p)
+            continue
+        }
+
+        // 三线射手：打上/中/下三行
+        if t == P_THREEPEATER {
+            var has = false
+            var dr = -1
+            while dr <= 1 {
+                var r2 = p.row + dr
+                if r2 >= 0 and r2 < g.rows and g.rowWalk[r2] == 1 {
+                    if zombieAhead(g, r2, p.x - 40.0, 810.0) { has = true }
+                }
+                dr = dr + 1
+            }
+            if has {
+                p.timer = p.timer + 1
+                var need = 84
+                if p.sub == 0 { need = 42 }
+                if p.timer >= need {
+                    p.timer = 0
+                    p.sub = 1
+                    var dr2 = -1
+                    while dr2 <= 1 {
+                        var r3 = p.row + dr2
+                        if r3 >= 0 and r3 < g.rows and g.rowWalk[r3] == 1 {
+                            var yy = cellFY(g, r3) - 62.0
+                            fireBullet(g, BK_PEA, r3, p.x + 24.0, yy, 8.3, 0.0, 20.0, DT_PEA, 0, yy)
+                        }
+                        dr2 = dr2 + 1
+                    }
+                    sfx(g, g.sfxShoot)
+                }
+            } else {
+                p.timer = 0
+                p.sub = 0
+            }
+            p.aframe = p.aframe + 1.0
+            live.add(p)
+            continue
+        }
+
+        // 小喷菇 / 海蘑菇：射程 320
+        if t == P_PUFFSHROOM or t == P_SEASHROOM {
+            if p.state == ST_SLEEP { p.aframe = p.aframe + 1.0; live.add(p); continue }
+            var has = zombieAhead(g, p.row, p.x - 10.0, p.x + 320.0)
+            if has {
+                p.timer = p.timer + 1
+                var need = 84
+                if p.sub == 0 { need = 42 }
+                if p.timer >= need {
+                    p.timer = 0
+                    p.sub = 1
+                    var kind = BK_SPORE
+                    if t == P_SEASHROOM { kind = BK_SPORES }
+                    fireBullet(g, kind, p.row, p.x + 10.0, p.y - 45.0, 8.3, 0.0, 20.0, DT_PEA, 0, p.y - 45.0)
+                    sfx(g, g.sfxShoot)
+                }
+            } else {
+                p.timer = 0
+                p.sub = 0
+            }
+            p.aframe = p.aframe + 1.0
+            live.add(p)
+            continue
+        }
+
+        // 胆小菇：射程无限，僵尸靠近会害怕
+        if t == P_SCAREDY {
+            if p.state == ST_SLEEP { p.aframe = p.aframe + 1.0; live.add(p); continue }
+            var cry = false
+            for g.zombies to z {
+                if not z.alive or z.state == ZS_DIE or z.hypno or z.row != p.row { continue }
+                var zc = z.x + z.width * 0.5
+                if zc > p.x - 140.0 and zc < p.x + 130.0 { cry = true }
+            }
+            if cry {
+                p.state = ST_ATK
+                p.timer = 0
+                p.sub = 0
+            } else {
+                if p.state == ST_ATK { p.state = ST_IDLE }
+                var has = zombieAhead(g, p.row, p.x - 10.0, 810.0)
+                if has {
+                    p.timer = p.timer + 1
+                    var need = 84
+                    if p.sub == 0 { need = 42 }
+                    if p.timer >= need {
+                        p.timer = 0
+                        p.sub = 1
+                        fireBullet(g, BK_SPORE, p.row, p.x + 10.0, p.y - 40.0, 8.3, 0.0, 20.0, DT_PEA, 0, p.y - 40.0)
+                        sfx(g, g.sfxShoot)
+                    }
+                } else {
+                    p.timer = 0
+                    p.sub = 0
+                }
+            }
+            p.aframe = p.aframe + 1.0
+            live.add(p)
+            continue
+        }
+
+        // 大喷菇：射程 400，范围伤害
+        if t == P_FUMESHROOM {
+            if p.state == ST_SLEEP { p.aframe = p.aframe + 1.0; live.add(p); continue }
+            var has = zombieAhead(g, p.row, p.x - 10.0, p.x + 400.0)
+            if has {
+                p.timer = p.timer + 1
+                if p.timer >= 66 { p.state = ST_ATK }
+                if p.timer >= 84 {
+                    p.timer = 0
+                    p.state = ST_IDLE
+                    var i = 0
+                    for g.zombies to z {
+                        if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row {
+                            if z.x + z.width > p.x and z.x < p.x + 400.0 {
+                                hurtZombie(g, i, 20.0, DT_RANGE, 0)
+                            }
+                        }
+                        i = i + 1
+                    }
+                    fireBullet(g, BK_FUME, p.row, p.x + 20.0, p.y - 55.0, 5.0, 0.0, 0.0, DT_PEA, 0, p.y - 55.0)
+                    sfx(g, g.sfxFume)
+                }
+            } else {
+                p.timer = 0
+                p.state = ST_IDLE
+            }
+            p.aframe = p.aframe + 1.0
+            live.add(p)
+            continue
+        }
+
+        // 杨桃：五向射击
+        if t == P_STARFRUIT {
+            var has = zombieAhead(g, p.row, p.x - 260.0, p.x + 300.0)
+            if has {
+                p.timer = p.timer + 1
+                var need = 84
+                if p.sub == 0 { need = 42 }
+                if p.timer >= need {
+                    p.timer = 0
+                    p.sub = 1
+                    var sy = p.y - 50.0
+                    fireBullet(g, BK_STAR, p.row, p.x, sy, 0.0, -8.3, 20.0, DT_PEA, 0, sy)
+                    fireBullet(g, BK_STAR, p.row, p.x, sy, 0.0, 8.3, 20.0, DT_PEA, 0, sy)
+                    fireBullet(g, BK_STAR, p.row, p.x, sy, -8.3, 0.0, 20.0, DT_COMMON, 0, sy)
+                    fireBullet(g, BK_STAR, p.row, p.x, sy, 5.8, 5.8, 20.0, DT_PEA, 0, sy)
+                    fireBullet(g, BK_STAR, p.row, p.x, sy, 6.6, -5.0, 20.0, DT_PEA, 0, sy)
+                    sfx(g, g.sfxShoot)
+                }
+            } else {
+                p.timer = 0
+                p.sub = 0
+            }
+            p.aframe = p.aframe + 1.0
+            live.add(p)
+            continue
+        }
+
+        // 火炬树桩：转化经过的豌豆
+        if t == P_TORCHWOOD {
+            for g.bullets to b {
+                if not b.alive or b.converted { continue }
+                if b.row != p.row { continue }
+                if b.kind != BK_PEA and b.kind != BK_ICE { continue }
+                if b.x > p.x - 24.0 and b.x < p.x + 24.0 {
+                    if b.kind == BK_PEA {
+                        b.kind = BK_FIRE
+                        b.dmg = 27.0
+                        sfx(g, g.sfxFire)
+                    } else {
+                        b.kind = BK_PEA
+                        b.dmg = 20.0
+                        b.effect = 0
+                    }
+                    b.converted = true
+                }
+            }
+            p.aframe = p.aframe + 1.0
+            live.add(p)
+            continue
+        }
+
+        // 地刺：每 700ms 扎 20
+        if t == P_SPIKEWEED {
+            p.timer = p.timer + 1
+            p.aframe = p.aframe + 1.0
+            if p.timer >= 42 {
+                p.timer = 0
+                var i = 0
+                for g.zombies to z {
+                    if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row {
+                        var zc = z.x + z.width * 0.5
+                        if zc > p.x - 45.0 and zc < p.x + 45.0 {
+                            hurtZombie(g, i, 20.0, DT_COMMON, 0)
+                        }
+                    }
+                    i = i + 1
+                }
+            }
+            live.add(p)
+            continue
+        }
+
+        // 大嘴花：吞一个消化 15s
+        if t == P_CHOMPER {
+            if p.state == ST_DIGEST {
+                p.timer = p.timer - 1
+                if p.timer <= 0 { p.state = ST_IDLE; p.aframe = 0.0 }
+                else { p.aframe = p.aframe + 1.0 }
+                live.add(p)
+                continue
+            }
+            if p.state == ST_ATK {
+                p.aframe = p.aframe + 1.0
+                var an = g.anims[A_CHOMPER_ATK]
+                if frameIdx(an, p.aframe) >= an.n - 3 {
+                    // 吞掉记录的目标
+                    var i = 0
+                    for g.zombies to z {
+                        if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row {
+                            var zc = z.x + z.width * 0.5
+                            if zc > _float(p.sub) - 70.0 and zc < _float(p.sub) + 70.0 {
+                                hurtZombie(g, i, 1800.0, DT_ASH, 0)
+                            }
+                        }
+                        i = i + 1
+                    }
+                    p.state = ST_DIGEST
+                    p.timer = 900
+                    p.aframe = 0.0
+                    sfx(g, g.sfxChomp)
+                }
+                live.add(p)
+                continue
+            }
+            var ti = -1
+            var tx = 0.0
+            var i2 = 0
+            for g.zombies to z {
+                if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row and not z.diving {
+                    var zc2 = z.x + z.width * 0.5
+                    if zc2 > p.x - 30.0 and zc2 < p.x + 216.0 {
+                        ti = i2
+                        tx = zc2
+                        break
+                    }
+                }
+                i2 = i2 + 1
+            }
+            if ti >= 0 {
+                p.state = ST_ATK
+                p.sub = _int(tx)
+                p.aframe = 0.0
+            } else {
+                p.aframe = p.aframe + 1.0
+            }
+            live.add(p)
+            continue
+        }
+
+        // 窝瓜：瞄准 1s 后压死
+        if t == P_SQUASH {
+            if p.state == ST_WORK {
+                p.aframe = p.aframe + 1.0
+                var an2 = g.anims[A_SQUASH_ATK]
+                if frameIdx(an2, p.aframe) >= an2.n - 1 { continue }
+                live.add(p)
+                continue
+            }
+            if p.state == ST_ATK {
+                p.timer = p.timer + 1
+                p.aframe = p.aframe + 1.0
+                if p.timer >= 60 {
+                    var ti2 = -1
+                    var i3 = 0
+                    for g.zombies to z {
+                        if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row {
+                            var zc3 = z.x + z.width * 0.5
+                            if zc3 > p.x - 60.0 and zc3 < p.x + 90.0 { ti2 = i3 }
+                        }
+                        i3 = i3 + 1
+                    }
+                    if ti2 >= 0 { hurtZombie(g, ti2, 1800.0, DT_RANGE, 0) }
+                    sfx(g, g.sfxSquash)
+                    p.state = ST_WORK
+                    p.timer = 0
+                    p.aframe = 0.0
+                }
+                live.add(p)
+                continue
+            }
+            var found = false
+            for g.zombies to z {
+                if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row {
+                    if z.x + z.width > p.x - 20.0 and z.x < p.x + 90.0 { found = true }
+                }
+            }
+            if found {
+                p.state = ST_ATK
+                p.timer = 0
+                sfx(g, g.sfxSquash)
+            }
+            p.aframe = p.aframe + 1.0
+            live.add(p)
+            continue
+        }
+
+        // 土豆雷：15s 出土，碰僵尸即爆
+        if t == P_POTATOMINE {
+            if p.state == ST_INIT {
+                p.timer = p.timer + 1
+                p.aframe = p.aframe + 1.0
+                if p.timer >= 900 { p.state = ST_IDLE; p.aframe = 0.0 }
+                live.add(p)
+                continue
+            }
+            if p.state == ST_WORK {
+                p.aframe = p.aframe + 1.0
+                var an3 = g.anims[A_POTATO_B]
+                if frameIdx(an3, p.aframe) >= an3.n - 1 { continue }
+                live.add(p)
+                continue
+            }
+            var ti3 = -1
+            var i4 = 0
+            for g.zombies to z {
+                if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row {
+                    var zc4 = z.x + z.width * 0.5
+                    if zc4 > p.x - 45.0 and zc4 < p.x + 45.0 { ti3 = i4; break }
+                }
+                i4 = i4 + 1
+            }
+            if ti3 >= 0 {
+                ashBlast(g, p.x, p.y, 45.0, 0, 1800.0)
+                sfx(g, g.sfxPotato)
+                continue
+            }
+            p.aframe = p.aframe + 1.0
+            live.add(p)
+            continue
+        }
+
+        // 缠绕水草：拖杀一只水僵尸
+        if t == P_TANGLEKLEP {
+            if p.state == ST_WORK {
+                p.aframe = p.aframe + 1.0
+                var an4 = g.anims[A_TANGLEKLEP_S]
+                if frameIdx(an4, p.aframe) >= an4.n - 1 { continue }
+                live.add(p)
+                continue
+            }
+            if isWaterCell(g, p.row) {
+                var ti4 = -1
+                var i5 = 0
+                for g.zombies to z {
+                    if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row {
+                        var zc5 = z.x + z.width * 0.5
+                        if zc5 > p.x - 50.0 and zc5 < p.x + 50.0 { ti4 = i5; break }
+                    }
+                    i5 = i5 + 1
+                }
+                if ti4 >= 0 {
+                    hurtZombie(g, ti4, 1800.0, DT_ASH, 0)
+                    p.state = ST_WORK
+                    p.aframe = 0.0
+                    sfx(g, g.sfxChomp)
+                    live.add(p)
+                    continue
+                }
+            }
+            p.aframe = p.aframe + 1.0
+            live.add(p)
+            continue
+        }
+
+        // 墓碑吞噬者：吃掉同格墓碑
+        if t == P_GRAVEBUSTER {
+            p.aframe = p.aframe + 1.0
+            var an5 = g.anims[A_GRAVEBUSTER]
+            var gi = graveAt(g, p.row, p.col)
+            if frameIdx(an5, p.aframe) >= an5.n - 2 and gi >= 0 {
+                g.graves[gi].alive = false
+                sfx(g, g.sfxShovel)
+            }
+            if frameIdx(an5, p.aframe) >= an5.n - 1 { continue }
+            live.add(p)
+            continue
+        }
+
+        // 咖啡豆：唤醒同列蘑菇
+        if t == P_COFFEEBEAN {
+            p.aframe = p.aframe + 1.0
+            var an6 = g.anims[A_COFFEEBEAN]
+            if frameIdx(an6, p.aframe) >= an6.n - 2 {
+                for g.plants to q {
+                    if q.alive and q.col == p.col and q.state == ST_SLEEP {
+                        q.state = ST_IDLE
+                        q.aframe = 0.0
+                    }
+                }
+                sfx(g, g.sfxTap)
+                continue
+            }
+            live.add(p)
+            continue
+        }
+
+        // 寒冰菇：冻结全场
+        if t == P_ICESHROOM {
+            if p.state == ST_WORK {
+                p.aframe = p.aframe + 1.0
+                var an7 = g.anims[A_ICESHROOM]
+                if frameIdx(an7, p.aframe) >= an7.n - 1 {
+                    freezeAll(g)
+                    sfx(g, g.sfxFreeze)
+                    continue
+                }
+                live.add(p)
+                continue
+            }
+            if p.state == ST_SLEEP { p.aframe = p.aframe + 1.0; live.add(p); continue }
+            p.timer = p.timer + 1
+            p.aframe = p.aframe + 1.0
+            if p.timer >= 42 { p.state = ST_WORK; p.aframe = 0.0 }
+            live.add(p)
+            continue
+        }
+
+        // 毁灭菇：大爆炸并留坑
+        if t == P_DOOMSHROOM {
+            if p.state == ST_WORK {
+                p.aframe = p.aframe + 1.0
+                var an8 = g.anims[A_DOOMSHROOM_B]
+                if frameIdx(an8, p.aframe) >= an8.n - 1 {
+                    doomBlast(g, p)
+                    continue
+                }
+                live.add(p)
+                continue
+            }
+            if p.state == ST_SLEEP { p.aframe = p.aframe + 1.0; live.add(p); continue }
+            p.timer = p.timer + 1
+            p.aframe = p.aframe + 1.0
+            if p.timer >= 42 { p.state = ST_WORK; p.aframe = 0.0 }
+            live.add(p)
+            continue
+        }
+
+        // 樱桃炸弹：1.2s 后炸 3×3
+        if t == P_CHERRY {
+            p.timer = p.timer + 1
+            p.aframe = p.aframe + 1.0
+            if p.timer >= 72 {
+                ashBlast(g, p.x, p.y, 120.0, 1, 1800.0)
+                continue
+            }
+            live.add(p)
+            continue
+        }
+
+        // 火爆辣椒：烧掉整行
+        if t == P_JALAPENO {
+            p.timer = p.timer + 1
+            p.aframe = p.aframe + 1.0
+            if p.timer >= 42 {
+                jalapenoBurn(g, p.row, p.y)
+                continue
+            }
+            live.add(p)
+            continue
+        }
+
+        // 保龄球坚果
+        if t == P_BOWL1 or t == P_BOWL2 or t == P_BOWL3 {
+            updateBowlNut(g, p)
+            live.add(p)
+            continue
+        }
+
+        p.aframe = p.aframe + 1.0
+        live.add(p)
+    }
+    g.plants = live
+}
+
+// ==================== 僵尸 ====================
+
+func zombieAnimId(Game g, Zombie z): int {
+    var t = z.ztype
+    var atk = z.state == ZS_ATK
+    var lh = z.losthead
+    if z.state == ZS_DIE {
+        if z.ashDie {
+            if t == Z_ZOMBONI { return A_ZON_BOOM }
+            return A_BOOMDIE
+        }
+        if t == Z_NEWSPAPER { return A_NEWS_DIE }
+        if t == Z_FOOTBALL { return A_FB_DIE }
+        if t == Z_POLE { return A_POLE_DIE }
+        if t == Z_SNORKEL { return A_SNK_DIE }
+        if t == Z_ZOMBONI { return A_ZON_DIE }
+        if t == Z_DUCKY or t == Z_DUCKY_CONE or t == Z_DUCKY_BUCKET { return A_DUCK_DIE }
+        return A_Z_DIE
+    }
+    // 冰车：按血量换外观
+    if t == Z_ZOMBONI {
+        if z.hp <= 496.0 { return A_ZON_D2 }
+        if z.hp <= 923.0 { return A_ZON_D1 }
+        return A_ZON_WALK
+    }
+    // 鸭子救生圈
+    if t == Z_DUCKY {
+        if z.inWater and not atk { return A_DUCK_SWIM }
+        if atk { if lh { return A_Z_LH_ATK } return A_DUCK_ATK }
+        if lh { return A_DUCK_LH }
+        return A_DUCK_WALK
+    }
+    if t == Z_DUCKY_CONE {
+        if z.inWater and not atk { if z.hat1 > 0 { return A_DC_SWIM } return A_DUCK_SWIM }
+        if atk { return A_DC_ATK }
+        if z.hat1 > 0 { return A_DC_WALK }
+        return A_DUCK_WALK
+    }
+    if t == Z_DUCKY_BUCKET {
+        if z.inWater and not atk { if z.hat1 > 0 { return A_DB_SWIM } return A_DUCK_SWIM }
+        if atk { return A_DB_ATK }
+        if z.hat1 > 0 { return A_DB_WALK }
+        return A_DUCK_WALK
+    }
+    // 读报
+    if t == Z_NEWSPAPER {
+        if atk {
+            if lh { return A_NEWS_LH_ATK }
+            if z.paperGone { return A_NEWS_NP_ATK }
+            return A_NEWS_ATK
+        }
+        if lh { return A_NEWS_LH }
+        if z.paperGone { return A_NEWS_NP }
+        return A_NEWS_WALK
+    }
+    // 橄榄球
+    if t == Z_FOOTBALL {
+        if atk {
+            if lh { return A_FB_LH_ATK }
+            if z.hat1 > 0 { return A_FB_ATK }
+            return A_FB_HELM_ATK
+        }
+        if lh { return A_FB_LH }
+        if z.hat1 > 0 { return A_FB_WALK }
+        return A_FB_HELM
+    }
+    // 撑杆跳
+    if t == Z_POLE {
+        if atk {
+            if lh { return A_POLE_LH_ATK }
+            return A_POLE_ATK
+        }
+        if lh { return A_POLE_LH }
+        if z.jumped { return A_POLE_AFTER }
+        return A_POLE_WALK
+    }
+    // 潜水
+    if t == Z_SNORKEL {
+        if atk {
+            if lh { return A_SNK_LH_ATK }
+            return A_SNK_ATK
+        }
+        if lh { return A_SNK_LH }
+        if z.diving { return A_SNK_DIVE }
+        return A_SNK_WALK
+    }
+    // 普通/旗帜/路障/铁桶/铁门
+    if atk {
+        if lh { if t == Z_FLAG { return A_FLAG_LH_ATK } return A_Z_LH_ATK }
+        if t == Z_CONE { return A_CONE_ATK }
+        if t == Z_BUCKET { return A_BUCKET_ATK }
+        if t == Z_DOOR { return A_DOOR_ATK }
+        if t == Z_FLAG { return A_FLAG_ATK }
+        return A_Z_ATK
+    }
+    if lh { if t == Z_FLAG { return A_FLAG_LH } return A_Z_LH }
+    if t == Z_CONE { if z.hat1 > 0 { return A_CONE_WALK } return A_Z_WALK }
+    if t == Z_BUCKET { if z.hat1 > 0 { return A_BUCKET_WALK } return A_Z_WALK }
+    if t == Z_DOOR { if z.hat2 > 0 { return A_DOOR_WALK } return A_Z_WALK }
+    if t == Z_FLAG { return A_FLAG_WALK }
+    return A_Z_WALK
+}
+
+// 僵尸当前应显示的动画组（含起跳/过渡特例）
+func zombieDrawAnim(Game g, Zombie z): int {
+    if z.jumping { return A_POLE_JUMP }
+    if z.transT > 0 { return z.transAnim }
+    return zombieAnimId(g, z)
+}
+
+func findTargetPlant(Game g, Zombie z): int {
+    var best = -1
+    var bestScore = -9999.0
+    var i = 0
+    for g.plants to p {
+        if not p.alive or p.row != z.row { i = i + 1; continue }
+        if plantProtected(p) { i = i + 1; continue }
+        var pw = plantW(g, p)
+        var px0 = p.x - pw * 0.5
+        var px1 = p.x + pw * 0.5
+        if z.x + z.width > px0 - 4.0 and z.x < px1 + 4.0 {
+            var score = p.x
+            if p.ptype == P_PUMPKIN { score = score + 1000.0 }
+            if p.ptype == P_LILYPAD { score = score - 500.0 }
+            if score > bestScore { bestScore = score; best = i }
+        }
+        i = i + 1
+    }
+    return best
+}
+
+func eatPlant(Game g, Zombie z, int idx) {
+    if idx < 0 or idx >= g.plants.len() { return }
+    var i = 0
+    for g.plants to p {
+        if i != idx { i = i + 1; continue }
+        if not p.alive { return }
+        p.hp = p.hp - 50.0
+        p.hitFlash = 8
+        sfx(g, g.sfxChomp)
+        if p.ptype == P_GARLIC and z.rowTo < 0 {
+            var dir = rands.ints(0, 1)
+            if dir == 0 { dir = -1 }
+            var nr = z.row + dir
+            if nr < 0 or nr > g.rows - 1 { nr = z.row - dir }
+            if nr >= 0 and nr <= g.rows - 1 and g.rowWalk[nr] == 1 {
+                z.rowTo = nr
+                z.state = ZS_WALK
+                z.aframe = 0.0
+            }
+        }
+        if p.ptype == P_HYPNOSHROOM and p.state != ST_SLEEP and not z.hypno {
+            if (ZFG[z.ztype] & ZF_ZOMBONI) == 0 {
+                z.hypno = true
+                z.state = ZS_WALK
+                z.speed = ZSP[z.ztype]
+                if z.speed <= 0.0 { z.speed = 1.0 }
+                z.aframe = 0.0
+                sfx(g, g.sfxHypno)
+            }
+        }
+        if p.hp <= 0.0 {
+            p.alive = false
+            addParticles(g, p.x, p.y - 20.0, 10, #7CB342FF)
+        }
+        return
+    }
+}
+
+func killZombie(Game g, Zombie z, bool ash) {
+    if z.state == ZS_DIE { return }
+    z.state = ZS_DIE
+    z.ashDie = ash
+    z.aframe = 0.0
+    z.dieT = 0
+    g.killed = g.killed + 1
+    addParticles(g, z.x + z.width * 0.5, z.y - 80.0, 14, #8D6E63FF)
+    sfx(g, g.sfxPop)
+}
+
+func applyIce(Game g, Zombie z) {
+    if (ZFG[z.ztype] & ZF_ICE_IMMUNE) != 0 { return }
+    z.slowT = 600
+}
+
+// 对下标为 idx 的僵尸造成伤害（伤害类型语义对齐 zombie.py setDamage）
+func hurtZombie(Game g, int idx, float dmg, int dtype, int effect) {
+    if idx < 0 or idx >= g.zombies.len() { return }
+    var i = 0
+    for g.zombies to z {
+        if i != idx { i = i + 1; continue }
+        if not z.alive or z.state == ZS_DIE { return }
+        // 冰冻/解冻效果
+        if effect == 1 {
+            if dtype == DT_PEA {
+                if z.hat2 <= 0 { applyIce(g, z) }
+            } else {
+                applyIce(g, z)
+            }
+        } else if effect == 2 {
+            if dtype == DT_PEA {
+                if z.hat2 <= 0 { z.slowT = 0 }
+            } else {
+                z.slowT = 0
+            }
+        }
+        // 伤害传递
+        if dtype == DT_PEA {
+            if z.hat2 > 0 {
+                z.hat2 = z.hat2 - _int(dmg)
+                if z.hat2 < 0 {
+                    var over = -z.hat2
+                    z.hat2 = 0
+                    if z.hat1 > 0 {
+                        z.hat1 = z.hat1 - over
+                        if z.hat1 < 0 { z.hp = z.hp + _float(z.hat1); z.hat1 = 0 }
+                    } else {
+                        z.hp = z.hp - _float(over)
+                    }
+                }
+            } else if z.hat1 > 0 {
+                z.hat1 = z.hat1 - _int(dmg)
+                if z.hat1 < 0 { z.hp = z.hp + _float(z.hat1); z.hat1 = 0 }
+            } else {
+                z.hp = z.hp - dmg
+            }
+        } else if dtype == DT_COMMON {
+            if z.hat1 > 0 {
+                z.hat1 = z.hat1 - _int(dmg)
+                if z.hat1 < 0 { z.hp = z.hp + _float(z.hat1); z.hat1 = 0 }
+            } else {
+                z.hp = z.hp - dmg
+            }
+        } else if dtype == DT_RANGE {
+            if z.hat2 > 0 {
+                z.hat2 = z.hat2 - _int(dmg)
+                if z.hat2 <= 0 {
+                    var over2 = -z.hat2
+                    z.hat2 = 0
+                    if z.hat1 > 0 {
+                        z.hat1 = z.hat1 - _int(dmg) + over2
+                        if z.hat1 < 0 { z.hp = z.hp + _float(z.hat1); z.hat1 = 0 }
+                    } else {
+                        z.hp = z.hp - dmg + _float(over2)
+                    }
+                } else {
+                    if z.hat1 > 0 {
+                        z.hat1 = z.hat1 - _int(dmg)
+                        if z.hat1 < 0 { z.hp = z.hp + _float(z.hat1); z.hat1 = 0 }
+                    } else {
+                        z.hp = z.hp - dmg
+                    }
+                }
+            } else if z.hat1 > 0 {
+                z.hat1 = z.hat1 - _int(dmg)
+                if z.hat1 < 0 { z.hp = z.hp + _float(z.hat1); z.hat1 = 0 }
+            } else {
+                z.hp = z.hp - dmg
+            }
+        } else if dtype == DT_ASH {
+            z.hp = z.hp - dmg
+        } else {
+            // 保龄球
+            if z.hat2 > 0 {
+                z.hat2 = z.hat2 - _int(dmg * 0.8)
+            } else if z.hat1 > 0 {
+                z.hat1 = z.hat1 - _int(dmg)
+            } else {
+                z.hp = z.hp - dmg
+            }
+        }
+        // 报纸碎裂后暴走
+        if z.ztype == Z_NEWSPAPER and z.hat2 <= 0 and not z.paperGone {
+            z.paperGone = true
+            z.speed = 2.65
+            sfx(g, g.sfxNewspaper)
+        }
+        if z.hp <= 0.0 {
+            killZombie(g, z, dtype == DT_ASH)
+        }
+        return
+    }
+}
+
+func updateZombies(Game g) {
+    Array[Zombie] live = []
+    for g.zombies to z {
+        if not z.alive { continue }
+        if z.hitFlash > 0 { z.hitFlash = z.hitFlash - 1 }
+
+        // 死亡动画播完移除
+        if z.state == ZS_DIE {
+            z.aframe = z.aframe + 1.0
+            z.dieT = z.dieT + 1
+            var an = g.anims[zombieDrawAnim(g, z)]
+            if z.dieT > 300 or frameIdx(an, z.aframe) >= an.n { continue }
+            live.add(z)
+            continue
+        }
+
+        // 过渡动画（下水/上浮）
+        if z.transT > 0 {
+            z.transT = z.transT - 1
+            z.aframe = z.aframe + 1.0
+            if z.transT <= 0 { z.aframe = 0.0 }
+            live.add(z)
+            continue
+        }
+
+        // 冻结
+        if z.state == ZS_FREEZE {
+            z.freezeT = z.freezeT - 1
+            if z.freezeT <= 0 {
+                z.state = z.oldState
+                z.slowT = 600
+                z.aframe = 0.0
+            }
+            live.add(z)
+            continue
+        }
+        if z.slowT > 0 { z.slowT = z.slowT - 1 }
+
+        // 掉头：进入濒死衰伤
+        if z.hp <= 70.0 and z.hp > 0.0 and not z.losthead {
+            z.losthead = true
+            addParticles(g, z.x + z.width * 0.5, z.y - 120.0, 10, #8D6E63FF)
+            sfx(g, g.sfxPop)
+        }
+        if z.losthead and z.hp > 0.0 { z.hp = z.hp - 0.42 }
+        if z.hp <= 0.0 {
+            killZombie(g, z, false)
+            live.add(z)
+            continue
+        }
+
+        // 大蒜换行
+        if z.rowTo >= 0 {
+            var targetY = _float(z.rowTo - z.row) * _float(g.cellH)
+            if z.yOff < targetY {
+                z.yOff = z.yOff + 3.0
+                if z.yOff > targetY { z.yOff = targetY }
+            } else if z.yOff > targetY {
+                z.yOff = z.yOff - 3.0
+                if z.yOff < targetY { z.yOff = targetY }
+            }
+            if z.yOff == targetY {
+                z.row = z.rowTo
+                z.yOff = 0.0
+                z.rowTo = -1
+            }
+        }
+
+        // 撑杆跳：起跳判定
+        if z.ztype == Z_POLE and not z.jumped and not z.jumping and not z.hypno and z.rowTo < 0 {
+            var jx = -1.0
+            var tall = false
+            for g.plants to q {
+                if not q.alive or q.row != z.row { continue }
+                if q.ptype == P_LILYPAD { continue }
+                if q.x > z.x - 70.0 and q.x - 48.0 <= z.x + 6.0 {
+                    if jx < 0.0 or q.x - 48.0 < jx { jx = q.x - 48.0 }
+                    if q.ptype == P_TALLNUT { tall = true }
+                }
+            }
+            if jx >= 0.0 {
+                z.jumping = true
+                z.jumpT = 0
+                z.jumpFail = tall
+                sfx(g, g.sfxAwooga)
+            }
+        }
+        if z.jumping {
+            z.jumpT = z.jumpT + 1
+            z.aframe = z.aframe + 1.0
+            if z.jumpFail {
+                if z.jumpT >= 36 { z.jumping = false; z.jumpFail = false; z.aframe = 0.0 }
+                live.add(z)
+                continue
+            }
+            z.x = z.x - 5.0
+            if z.jumpT >= 36 {
+                z.jumping = false
+                z.jumped = true
+                z.speed = 1.04
+                z.aframe = 0.0
+            }
+            live.add(z)
+            continue
+        }
+
+        // 魅惑僵尸：向右走，遇僵尸就咬
+        if z.hypno {
+            z.x = z.x + 2.0
+            z.aframe = z.aframe + 1.0
+            var attacked = false
+            var i = 0
+            for g.zombies to q {
+                if not attacked and q.alive and q.state != ZS_DIE and not q.hypno and q.row == z.row {
+                    if q.x + q.width > z.x - 10.0 and q.x < z.x + z.width + 20.0 {
+                        z.eatT = z.eatT + 1
+                        if z.eatT >= 30 {
+                            z.eatT = 0
+                            hurtZombie(g, i, 50.0, DT_COMMON, 0)
+                            sfx(g, g.sfxChomp)
+                        }
+                        attacked = true
+                    }
+                }
+                i = i + 1
+            }
+            if z.x > 860.0 { continue }
+            live.add(z)
+            continue
+        }
+
+        // 啃食
+        var pi = -1
+        if z.rowTo < 0 { pi = findTargetPlant(g, z) }
+        if pi >= 0 {
+            if z.state != ZS_ATK { z.state = ZS_ATK; z.eatT = 0; z.aframe = 0.0 }
+            z.eatT = z.eatT + 1
+            var interval = 30
+            if z.slowT > 0 { interval = 60 }
+            if z.eatT >= interval {
+                z.eatT = 0
+                eatPlant(g, z, pi)
+            }
+            z.aframe = z.aframe + 1.0
+            live.add(z)
+            continue
+        }
+        if z.state == ZS_ATK { z.state = ZS_WALK; z.aframe = 0.0 }
+
+        // 行走
+        var spd = z.speed
+        if z.slowT > 0 { spd = spd * 0.5 }
+        if z.ztype == Z_ZOMBONI {
+            var col = colAt(g, z.x + z.width * 0.5)
+            spd = 1.5 - _float(9 - col) * 0.225
+            if spd < 0.6 { spd = 0.6 }
+            if z.slowT > 0 { spd = spd * 0.5 }
+        }
+        var stepInt = 3.6 / spd
+        z.moveAcc = z.moveAcc + 1.0
+        while z.moveAcc >= stepInt {
+            z.x = z.x - 1.0
+            z.moveAcc = z.moveAcc - stepInt
+        }
+        z.aframe = z.aframe + 1.0
+        if rands.ints(0, 5) == 0 and _int(z.aframe) % 30 == 0 { sfx(g, g.sfxGroan) }
+
+        // 冰车：碾植物、造冰道
+        if z.ztype == Z_ZOMBONI {
+            crushPlants(g, z)
+            spawnIce(g, z)
+        }
+
+        // 小推车 / 失败
+        if z.x < 30.0 {
+            var mi = -1
+            var k = 0
+            for g.mowers to m {
+                if m.alive and not m.active and m.row == z.row { mi = k }
+                k = k + 1
+            }
+            if mi >= 0 {
+                g.mowers[mi].active = true
+                sfx(g, g.sfxMower)
+            }
+        }
+        if z.x + z.width < -20.0 {
+            var anyMower = false
+            for g.mowers to m {
+                if m.alive and m.active and m.row == z.row { anyMower = true }
+            }
+            if not anyMower {
+                g.state = ST_LOSE
+                stopBgm(g)
+                sfx(g, g.sfxLose)
+                saveGame(g)
+            }
+        }
+        live.add(z)
+    }
+    g.zombies = live
+}
+
+func crushPlants(Game g, Zombie z) {
+    for g.plants to q {
+        if not q.alive or q.row != z.row { continue }
+        if q.ptype == P_SPIKEWEED {
+            var zc = z.x + z.width * 0.5
+            if zc > q.x - 45.0 and zc < q.x + 45.0 {
+                q.alive = false
+                hurtZombie(g, zombieIdx(g, z), 1800.0, DT_ASH, 0)
+            }
+            continue
+        }
+        if q.x > z.x - 10.0 and q.x < z.x + z.width + 10.0 {
+            q.alive = false
+            addParticles(g, q.x, q.y - 20.0, 8, #7CB342FF)
+        }
+    }
+}
+
+func zombieIdx(Game g, Zombie z): int {
+    var i = 0
+    for g.zombies to q {
+        if q.row == z.row and q.x == z.x and q.ztype == z.ztype { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+func spawnIce(Game g, Zombie z) {
+    var col = colAt(g, z.x + z.width * 0.5)
+    var row = z.row
+    for g.ices to ic {
+        if ic.row == row and ic.col == col { return }
+    }
+    var ic2 = new IceTile()
+    ic2.row = row
+    ic2.col = col
+    ic2.x = cellCX(g, col)
+    ic2.y = cellFY(g, row)
+    ic2.alive = true
+    g.ices.add(ic2)
+}
+
+// ==================== 子弹 ====================
+
+func updateBullets(Game g) {
+    Array[Bullet] live = []
+    for g.bullets to b {
+        if not b.alive { continue }
+        b.x = b.x + b.vx
+        b.y = b.y + b.vy
+        b.aframe = b.aframe + 1.0
+        if b.kind == BK_STAR {
+            if b.y < b.ty { b.y = b.y + 12.5; if b.y > b.ty { b.y = b.ty } }
+            else if b.y > b.ty { b.y = b.y - 12.5; if b.y < b.ty { b.y = b.ty } }
+        }
+        if b.x > 880.0 or b.x < -80.0 or b.y < -80.0 or b.y > 680.0 { continue }
+        if b.kind == BK_FUME {
+            var an = g.anims[A_FUME]
+            if frameIdx(an, b.aframe) >= an.n - 1 { continue }
+            live.add(b)
+            continue
+        }
+        // 命中判定
+        var hitIdx = -1
+        var i = 0
+        for g.zombies to z {
+            if z.alive and z.state != ZS_DIE and not z.hypno {
+                var yOk = b.y > z.y - 140.0 and b.y < z.y + 10.0
+                var rowOk = true
+                if b.kind != BK_STAR { rowOk = z.row == b.row }
+                if yOk and rowOk and b.x > z.x - 8.0 and b.x < z.x + z.width + 8.0 {
+                    hitIdx = i
+                    break
+                }
+            }
+            i = i + 1
+        }
+        if hitIdx >= 0 {
+            hurtZombie(g, hitIdx, b.dmg, b.dmgType, b.effect)
+            var pc = #66BB6AFF
+            if b.kind == BK_ICE { pc = #4FC3F7FF }
+            if b.kind == BK_FIRE { pc = #FF7043FF }
+            addParticles(g, b.x, b.y, 5, pc)
+            sfx(g, g.sfxSplat)
+            if b.kind == BK_FIRE and not b.fired {
+                b.fired = true
+                // 火球溅射：左右 40px
+                var j = 0
+                for g.zombies to z {
+                    if z.alive and z.state != ZS_DIE and not z.hypno and z.row == b.row {
+                        var zc = z.x + z.width * 0.5
+                        if zc > b.x - 40.0 and zc < b.x + 40.0 {
+                            hurtZombie(g, j, 13.0, DT_COMMON, 2)
+                        }
+                    }
+                    j = j + 1
+                }
+            }
+            continue
+        }
+        live.add(b)
+    }
+    g.bullets = live
+}
+
+// ==================== 其他更新 ====================
+
+func updateSuns(Game g) {
+    Array[Sun] live = []
+    for g.suns to s {
+        if not s.alive { continue }
+        s.aframe = s.aframe + 1.0
+        if s.collecting {
+            var dx = s.tx - s.x
+            var dy = s.ty2 - s.y
+            var d = maths.hypot(dx, dy)
+            if d < 6.0 {
+                g.sun = g.sun + _int(s.value)
+                if g.sun > 9990 { g.sun = 9990 }
+                addFloat(g, s.x - 10.0, s.y - 8.0, "+" + _int(s.value), #FFD54FFF)
+                sfx(g, g.sfxCoin)
+                continue
+            }
+            s.x = s.x + dx / d * 9.0
+            s.y = s.y + dy / d * 9.0
+            live.add(s)
+            continue
+        }
+        if s.falling {
+            s.y = s.y + 0.8
+            if s.y >= s.ty { s.y = s.ty; s.falling = false }
+            live.add(s)
+        } else {
+            s.life = s.life - 1
+            if s.life > 0 { live.add(s) }
+        }
+    }
+    g.suns = live
+}
+
+func updateMowers(Game g) {
+    Array[Mower] live = []
+    for g.mowers to m {
+        if not m.alive { continue }
+        if m.active {
+            m.x = m.x + 5.0
+            m.aframe = m.aframe + 1.0
+            var i = 0
+            for g.zombies to z {
+                if z.alive and z.state != ZS_DIE and z.row == m.row {
+                    if z.x < m.x + 45.0 and z.x + z.width > m.x - 45.0 {
+                        z.hp = 0.0
+                        z.hat1 = 0
+                        z.hat2 = 0
+                        killZombie(g, z, false)
+                    }
+                }
+                i = i + 1
+            }
+            if m.x > 900.0 { continue }
+        }
+        live.add(m)
+    }
+    g.mowers = live
+}
+
+func updateEffects(Game g) {
+    Array[Particle] lp = []
+    for g.parts to p {
+        p.x = p.x + p.vx
+        p.y = p.y + p.vy
+        p.vy = p.vy + 0.08
+        p.life = p.life - 1
+        if p.life > 0 { lp.add(p) }
+    }
+    g.parts = lp
+
+    Array[FloatText] lf = []
+    for g.floats to f {
+        f.y = f.y - 0.5
+        f.life = f.life - 1
+        if f.life > 0 { lf.add(f) }
+    }
+    g.floats = lf
+
+    Array[Hole] lh = []
+    for g.holes to h {
+        h.life = h.life - 1
+        if h.life > 0 { lh.add(h) }
+    }
+    g.holes = lh
+
+    for g.graves to gr {
+        if gr.alive { gr.aframe = gr.aframe + 1.0 }
+    }
+
+    // 天上掉阳光（仅白天 + 静态选卡栏）
+    if g.produceSun {
+        g.skyTimer = g.skyTimer - 1
+        if g.skyTimer <= 0 {
+            var gap = 255 + g.fallenSun * 6
+            if gap > 570 { gap = 570 }
+            g.skyTimer = gap + rands.ints(0, 165)
+            g.fallenSun = g.fallenSun + 1
+            var col = rands.ints(0, 8)
+            var row = rands.ints(0, g.rows - 1)
+            if g.rowPlant[row] == 1 {
+                // 生成点放在卡片栏(高 87)下方，避免被栏挡住看不见也点不到
+                spawnSun(g, cellCX(g, col), g.mapOY + 2.0, cellFY(g, row) - 10.0, 25.0)
+            }
+        }
+    }
+}
+
+func updateBelt(Game g) {
+    if g.barType != BAR_MOVE { return }
+    g.beltTimer = g.beltTimer - 1
+    if g.beltTimer <= 0 and g.belt.len() < 8 {
+        g.beltTimer = 360
+        var t = rands.ints(0, PLANT_N - 1)
+        if isWaterPlant(t) and not g.isPool { t = P_SUNFLOWER }
+        g.belt.add(t)
+    }
+}
+
+// ==================== 爆炸 / 特效 ====================
+
+func ashBlast(Game g, float x, float y, float rx, int rowRange, float dmg) {
+    addParticles(g, x, y - 40.0, 30, #E53935FF)
+    addParticles(g, x, y - 40.0, 18, #FFB300FF)
+    sfx(g, g.sfxCherry)
+    var i = 0
+    for g.zombies to z {
+        if z.alive and z.state != ZS_DIE and not z.hypno {
+            var zc = z.x + z.width * 0.5
+            if zc > x - rx and zc < x + rx {
+                var dy = z.y - y
+                var lim = _float(rowRange) * _float(g.cellH) + 60.0
+                if dy > -lim and dy < lim {
+                    hurtZombie(g, i, dmg, DT_ASH, 0)
+                }
+            }
+        }
+        i = i + 1
+    }
+}
+
+func jalapenoBurn(Game g, int row, float y) {
+    addParticles(g, 400.0, y - 40.0, 30, #FF7043FF)
+    sfx(g, g.sfxCherry)
+    var i = 0
+    for g.zombies to z {
+        if z.alive and z.state != ZS_DIE and not z.hypno and z.row == row {
+            hurtZombie(g, i, 1800.0, DT_ASH, 0)
+        }
+        i = i + 1
+    }
+    Array[IceTile] keep = []
+    for g.ices to ic {
+        if ic.row != row { keep.add(ic) }
+    }
+    g.ices = keep
+}
+
+func freezeAll(Game g) {
+    var i = 0
+    for g.zombies to z {
+        if z.alive and z.state != ZS_DIE and not z.hypno {
+            if (ZFG[z.ztype] & ZF_ICE_IMMUNE) == 0 {
+                z.oldState = z.state
+                z.state = ZS_FREEZE
+                z.freezeT = 240 + rands.ints(0, 120)
+                z.slowT = 600
+                hurtZombie(g, i, 20.0, DT_RANGE, 0)
+            }
+        }
+        i = i + 1
+    }
+    addParticles(g, 400.0, 300.0, 40, #4FC3F7FF)
+}
+
+func doomBlast(Game g, Plant p) {
+    addParticles(g, p.x, p.y - 40.0, 40, #E53935FF)
+    sfx(g, g.sfxBoom)
+    var i = 0
+    for g.zombies to z {
+        if z.alive and z.state != ZS_DIE and not z.hypno {
+            var zc = z.x + z.width * 0.5
+            if zc > p.x - 250.0 and zc < p.x + 250.0 {
+                var dy = z.y - p.y
+                if dy > -260.0 and dy < 260.0 { hurtZombie(g, i, 1800.0, DT_ASH, 0) }
+            }
+        }
+        i = i + 1
+    }
+    for g.plants to q {
+        if not q.alive { continue }
+        if q.row == p.row and q.col == p.col { continue }
+        var dx = q.x - p.x
+        var dy = q.y - p.y
+        if dx > -250.0 and dx < 250.0 and dy > -260.0 and dy < 260.0 {
+            q.alive = false
+            addParticles(g, q.x, q.y - 20.0, 8, #7CB342FF)
+        }
+    }
+    var h = new Hole()
+    h.row = p.row
+    h.col = p.col
+    h.x = p.x
+    h.y = p.y
+    h.life = 10800
+    g.holes.add(h)
+}
+
+// 保龄球坚果滚动
+func updateBowlNut(Game g, Plant p) {
+    if p.timer > 0 {
+        p.timer = p.timer - 1
+    } else {
+        var i = 0
+        for g.zombies to z {
+            if z.alive and z.state != ZS_DIE and not z.hypno and z.row == p.row {
+                if z.x + z.width > p.x - 40.0 and z.x < p.x + 40.0 and z.y - 130.0 < p.y and z.y > p.y - 40.0 {
+                    if p.ptype == P_BOWL2 {
+                        ashBlast(g, p.x, p.y, 120.0, 1, 1800.0)
+                        p.alive = false
+                        return
+                    }
+                    if z.ztype == Z_POLE and p.ptype == P_BOWL3 {
+                        hurtZombie(g, i, 99999.0, DT_ASH, 0)
+                    } else {
+                        hurtZombie(g, i, 550.0, DT_BOWL, 0)
+                    }
+                    p.timer = 20
+                    sfx(g, g.sfxMower)
+                    break
+                }
+            }
+            i = i + 1
+        }
+    }
+    p.x = p.x + p.vx
+    var top = g.mapOY + 10.0
+    var bot = g.mapOY + _float(g.rows * g.cellH) - 10.0
+    if p.y - 30.0 < top or p.y + 30.0 > bot { p.vx = -p.vx }
+    if p.x > 880.0 or p.x < -80.0 { p.alive = false }
+    p.aframe = p.aframe + 1.0
+}
+
+// ==================== 主更新 ====================
+
+func updateGame(Game g) {
+    g.frame = g.frame + 1
+    if g.bannerT > 0 { g.bannerT = g.bannerT - 1 }
+    for 0 : PLANT_N - 1 to i {
+        if g.cardCd[i] > 0 { g.cardCd[i] = g.cardCd[i] - 1 }
+    }
+    updateWaves(g)
+    updateZombies(g)
+    updatePlants(g)
+    updateBullets(g)
+    updateSuns(g)
+    updateMowers(g)
+    updateEffects(g)
+    updateBelt(g)
+    checkEnd(g)
+}
+
+func checkEnd(Game g) {
+    if g.state != ST_PLAY { return }
+    var total = g.numFlags * 10
+    if g.wave >= total and countZombies(g) == 0 and g.endTimer > 100 {
+        stopBgm(g)
+        sfx(g, g.sfxWin)
+        if g.mode == MODE_ADV {
+            if g.level >= LV_COUNT {
+                g.advComplete = g.advComplete + 1
+                g.level = 1
+                g.state = ST_AWARD
+            } else {
+                g.level = g.level + 1
+                g.state = ST_WIN
+            }
+        } else {
+            if g.lg >= 6 {
+                g.lgComplete = g.lgComplete + 1
+                g.lg = 1
+                g.state = ST_AWARD
+            } else {
+                g.lg = g.lg + 1
+                g.state = ST_WIN
+            }
+        }
+        saveGame(g)
+    }
+}
+
+// ==================== 种植 / 交互 ====================
+
+func graveAtCell(Game g, int row, int col): bool {
+    if graveAt(g, row, col) >= 0 { return true }
+    for g.holes to h {
+        if h.life > 0 and h.row == row and h.col == col { return true }
+    }
+    return false
+}
+
+func cellHasPlant(Game g, int row, int col): int {
+    var hasLily = false
+    var hasMain = false
+    for g.plants to p {
+        if not p.alive or p.row != row or p.col != col { continue }
+        if p.ptype == P_LILYPAD { hasLily = true } else { hasMain = true }
+    }
+    if hasMain { return 2 }
+    if hasLily { return 1 }
+    return 0
+}
+
+func canPlantAt(Game g, int row, int col, int t): bool {
+    if row < 0 or row >= g.rows or col < 0 or col > 8 { return false }
+    if g.rowPlant[row] == 0 { return false }
+    if g.barType == BAR_BOWLING and col >= 3 { return false }
+    if graveAtCell(g, row, col) { return false }
+    var water = isWaterCell(g, row)
+    if water {
+        if isWaterPlant(t) {
+            if cellHasPlant(g, row, col) != 0 { return false }
+            return true
+        }
+        if cellHasPlant(g, row, col) != 1 { return false }
+        return true
+    }
+    if isWaterPlant(t) { return false }
+    if cellHasPlant(g, row, col) != 0 { return false }
+    return true
+}
+
+func tryPlant(Game g, int row, int col) {
+    // 保龄球：点击场地直接从行首滚出
+    if g.barType == BAR_BOWLING {
+        if g.selCard < 0 { return }
+        var t = P_BOWL1
+        if g.selCard == 1 { t = P_BOWL2 }
+        if g.selCard == 2 { t = P_BOWL3 }
+        if not canPlantAt(g, row, 0, t) { sfx(g, g.sfxBuzzer); return }
+        var bp = new Plant()
+        bp.ptype = t
+        bp.row = row
+        bp.col = 0
+        bp.x = g.mapOX - 20.0
+        bp.y = cellFY(g, row)
+        bp.hp = 1.0
+        bp.maxHp = 1.0
+        bp.alive = true
+        bp.vx = 2.9 + _float(rands.ints(0, 7)) / 10.0
+        if t == P_BOWL3 { bp.vx = 3.6 + _float(rands.ints(0, 7)) / 10.0 }
+        g.plants.add(bp)
+        sfx(g, g.sfxTap)
+        g.selCard = -1
+        return
+    }
+
+    var t = -1
+    if g.barType == BAR_MOVE {
+        if g.selCard < 0 or g.selCard >= g.belt.len() { return }
+        t = g.belt[g.selCard]
+    } else {
+        t = g.selCard
+    }
+    if t < 0 { return }
+    if not canPlantAt(g, row, col, t) {
+        addFloat(g, cellCX(g, col) - 20.0, cellFY(g, row) - 50.0, "不能种在这里", #FF8A65FF)
+        sfx(g, g.sfxBuzzer)
+        return
+    }
+    if g.barType == BAR_STATIC {
+        if g.cardCd[t] > 0 {
+            addFloat(g, cellCX(g, col) - 20.0, cellFY(g, row) - 50.0, "冷却中", #FF8A65FF)
+            sfx(g, g.sfxBuzzer)
+            return
+        }
+        if g.sun < PC[t] {
+            addFloat(g, cellCX(g, col) - 24.0, cellFY(g, row) - 50.0, "阳光不足", #FF8A65FF)
+            sfx(g, g.sfxBuzzer)
+            return
+        }
+        g.sun = g.sun - PC[t]
+        g.cardCd[t] = PCD[t]
+    } else {
+        var keep = []
+        var bi = 0
+        for g.belt to bt {
+            if bi != g.selCard { keep.add(bt) }
+            bi = bi + 1
+        }
+        g.belt = keep
+    }
+    var p = new Plant()
+    p.ptype = t
+    p.row = row
+    p.col = col
+    p.x = cellCX(g, col)
+    p.y = cellFY(g, row)
+    p.maxHp = PHP[t]
+    p.hp = p.maxHp
+    p.alive = true
+    p.aframe = _float(rands.ints(0, 20))
+    if isSleepPlant(t) and not g.isNight { p.state = ST_SLEEP }
+    if t == P_POTATOMINE { p.state = ST_INIT; p.timer = 0 }
+    g.plants.add(p)
+    sfx(g, g.sfxPlant)
+    addParticles(g, p.x, p.y - 6.0, 8, #A5D6A7FF)
+    g.selCard = -1
+}
+
+func doShovel(Game g, int row, int col) {
+    var best = -1
+    var bestScore = -9999.0
+    var i = 0
+    for g.plants to p {
+        if not p.alive or p.row != row or p.col != col { i = i + 1; continue }
+        var score = p.x
+        if p.ptype == P_LILYPAD { score = score - 500.0 }
+        if score > bestScore { bestScore = score; best = i }
+        i = i + 1
+    }
+    if best < 0 { return }
+    var p = g.plants[best]
+    addParticles(g, p.x, p.y - 20.0, 12, #A5D6A7FF)
+    p.alive = false
+    sfx(g, g.sfxShovel)
+    g.shovelMode = false
+}
+
+func collectSunAt(Game g, float mx, float my): bool {
+    var anyHit = false
+    // 太阳用底部中心锚点绘制（drawAnim 是 x-w/2, y-h），判定框必须跟着贴图上沿走，
+    // 否则精灵上半部分看得见却点不中
+    var hw = 39.0
+    var hh = 78.0
+    var an = g.anims[A_SUN]
+    if an.n > 0 { hw = an.fw[0] * 0.5; hh = an.fh[0] }
+    for g.suns to s {
+        if not s.alive or s.collecting { continue }
+        var dx = mx - s.x
+        var dy = my - s.y
+        if dx > -hw - 4.0 and dx < hw + 4.0 and dy > -hh - 4.0 and dy < 4.0 {
+            s.collecting = true
+            s.tx = 42.0
+            s.ty2 = 45.0
+            anyHit = true
+        }
+    }
+    return anyHit
+}
+
+// ==================== 渲染基础 ====================
+
+func drawTex(Renderer r, Ptr[u8] t, float x, float y, float w, float h) {
+    if t != null { r.drawTextureAt(t, x, y, w, h) }
+}
+
+func drawTexCrop(Renderer r, Ptr[u8] t, float sx, float sy, float sw, float sh, float x, float y, float w, float h) {
+    if t != null { r.drawTextureFromTo(t, sx, sy, sw, sh, x, y, w, h) }
+}
+
+func drawBtn(Renderer r, Font f, string label, float cx, float cy, float w, float h, bool hov) {
+    var bx = cx - w * 0.5
+    var by = cy - h * 0.5
+    r.setColor(if hov then #4CAF50FF else #2E7D32FF)
+    r.fillRoundedRect(bx, by, w, h, 8.0)
+    r.setColor(if hov then #81C784FF else #66BB6AFF)
+    r.drawRoundedRect(bx, by, w, h, 8.0)
+    r.drawTextCentered(f, label, bx, w, by + h * 0.5 - 8.0, #FFFFFFFF)
+}
+
+// 原版 PvZ 风格木牌按钮（universalButton.png），悬停时轻微放大
+func drawUnivBtn(Renderer r, Ptr[u8] tex, Font f, string label, float cx, float cy, float w, float h, bool hov) {
+    var bx = cx - w * 0.5
+    var by = cy - h * 0.5
+    if hov {
+        drawTex(r, tex, bx - 4.0, by - 3.0, w + 8.0, h + 6.0)
+    } else {
+        drawTex(r, tex, bx, by, w, h)
+    }
+    r.drawTextCentered(f, label, bx, w, by + h * 0.5 - 8.0, #3E2A10FF)
+}
+
+func btnHover(Game g, float cx, float cy, float w, float h): bool {
+    return inRect(g.mx, g.my, cx - w * 0.5, cy - h * 0.5, w, h)
+}
+
+func btnHit(Game g, float cx, float cy, float w, float h): bool {
+    return inRect(g.mx, g.my, cx - w * 0.5, cy - h * 0.5, w, h)
+}
+
+// ==================== 场景渲染 ====================
+
+func drawBackground(Game g, Renderer r) {
+    drawTexCrop(r, g.texBg, BG_OX, 0.0, 800.0, 600.0, 0.0, 0.0, 800.0, 600.0)
+}
+
+func drawField(Game g, Renderer r) {
+    // 冰道
+    for g.ices to ic {
+        if ic.alive {
+            drawAnim(r, g.anims[A_ICE], _float((g.frame / 8) % 4), ic.x, ic.y)
+        }
+    }
+    // 坑
+    for g.holes to h {
+        if h.life > 0 {
+            drawAnim(r, g.anims[A_HOLE], 0.0, h.x, h.y)
+        }
+    }
+    // 墓碑
+    for g.graves to gr {
+        if gr.alive {
+            drawAnim(r, g.anims[A_GRAVE], gr.aframe, gr.x, gr.y)
+        }
+    }
+    // 小推车
+    for g.mowers to m {
+        if not m.alive { continue }
+        r.setColor(#00000044)
+        r.fillRect(m.x + 4.0, m.y + 48.0, 60.0, 7.0)
+        drawTex(r, g.texCar, m.x, m.y, 71.0, 57.0)
+    }
+    // 植物与僵尸（按行穿插绘制）
+    for 0 : g.rows - 1 to row {
+        for g.plants to p {
+            if not p.alive or p.row != row { continue }
+            if p.ptype == P_PUMPKIN { continue }
+            drawPlant(g, r, p)
+        }
+        for g.zombies to z {
+            if not z.alive or z.row != row { continue }
+            drawZombie(g, r, z)
+        }
+        // 南瓜头盖在最上层
+        for g.plants to p {
+            if not p.alive or p.row != row { continue }
+            if p.ptype != P_PUMPKIN { continue }
+            drawPlant(g, r, p)
+        }
+    }
+}
+
+func drawPlant(Game g, Renderer r, Plant p) {
+    var an = g.anims[plantAnim(g, p)]
+    if an.n <= 0 { return }
+    if p.ptype == P_BOWL1 or p.ptype == P_BOWL2 or p.ptype == P_BOWL3 {
+        // 保龄球：旋转
+        var ang = p.aframe * 4.0
+        if p.vx < 0.0 { ang = -ang }
+        var fi = frameIdx(an, p.aframe)
+        var t = an.tex[fi]
+        if t == null { return }
+        var w = an.fw[fi]
+        var h = an.fh[fi]
+        r.drawTextureRotated(t, p.x - w * 0.5, p.y - h, w, h, ang, w * 0.5, h * 0.5, 0)
+        return
+    }
+    drawAnim(r, an, p.aframe, p.x, p.y)
+    // 睡觉的蘑菇加个月亮标识
+    if p.state == ST_SLEEP {
+        r.setColor(#FFFFFFAA)
+        r.fillCircle(p.x + 22.0, p.y - 60.0, 4.0)
+    }
+}
+
+func drawZombie(Game g, Renderer r, Zombie z) {
+    var an = g.anims[zombieDrawAnim(g, z)]
+    if an.n <= 0 { return }
+    drawAnimLeft(r, an, z.aframe, z.x, z.y + z.yOff)
+    if z.state == ZS_FREEZE {
+        r.setColor(#4FC3F744)
+        r.fillRect(z.x - 6.0, z.y + z.yOff - 140.0, z.width + 12.0, 140.0)
+    } else if z.slowT > 0 {
+        r.setColor(#4FC3F722)
+        r.fillRect(z.x - 6.0, z.y + z.yOff - 140.0, z.width + 12.0, 140.0)
+    }
+    if z.hypno {
+        r.setColor(#FF80AB33)
+        r.fillRect(z.x - 6.0, z.y + z.yOff - 140.0, z.width + 12.0, 140.0)
+    }
+}
+
+func drawBullets(Game g, Renderer r) {
+    for g.bullets to b {
+        if not b.alive { continue }
+        var aid = A_PEA
+        if b.kind == BK_ICE { aid = A_PEA_ICE }
+        else if b.kind == BK_FIRE { aid = A_FIRE }
+        else if b.kind == BK_SPORE { aid = A_SPORE }
+        else if b.kind == BK_SPORES { aid = A_SPORE_S }
+        else if b.kind == BK_STAR { aid = A_STAR }
+        else if b.kind == BK_FUME { aid = A_FUME }
+        drawAnimMid(r, g.anims[aid], b.aframe, b.x, b.y)
+    }
+}
+
+func drawSuns(Game g, Renderer r) {
+    for g.suns to s {
+        if not s.alive { continue }
+        drawAnim(r, g.anims[A_SUN], s.aframe, s.x, s.y)
+    }
+}
+
+func drawEffects(Game g, Renderer r) {
+    for g.parts to p {
+        var a = _int(255.0 * _float(p.life) / _float(p.maxLife))
+        if a > 255 { a = 255 }
+        r.setColor((a << 24) | (p.c & 0xFFFFFF))
+        r.fillRect(p.x - p.size * 0.5, p.y - p.size * 0.5, p.size, p.size)
+    }
+    for g.floats to f {
+        var a = _int(255.0 * _float(f.life) / _float(f.maxLife))
+        if a > 255 { a = 255 }
+        r.drawText(g.font, f.text, f.x, f.y, (a << 24) | (f.c & 0xFFFFFF))
+    }
+}
+
+// ==================== HUD ====================
+
+func drawCardImg(Game g, Renderer r, int t, float x, float y, float w, float h, bool dim) {
+    if t >= 0 and t < g.texCards.len() {
+        drawTex(r, g.texCards[t], x, y, w, h)
+    } else {
+        r.setColor(#3E2A10FF)
+        r.fillRoundedRect(x, y, w, h, 5.0)
+    }
+    if dim {
+        r.setColor(#00000099)
+        r.fillRect(x, y, w, h)
+    }
+}
+
+func drawHUD(Game g, Renderer r) {
+    // 种子栏背景
+    drawTex(r, g.texChooserBg, 0.0, 0.0, 596.0, 87.0)
+    r.drawText(g.font, "" + g.sun, 21.0, 63.0, #FFFFFFFF)
+
+    if g.barType == BAR_MOVE {
+        // 传送带
+        drawTex(r, g.texMoveBg, 20.0, 0.0, 516.0, 86.0)
+        var bi = 0
+        for g.belt to bt {
+            var bx = 34.0 + _float(bi) * 52.0
+            var sel = g.selCard == bi
+            if sel {
+                r.setColor(#FFD54F66)
+                r.fillRoundedRect(bx - 2.0, 6.0, 54.0, 74.0, 6.0)
+            }
+            drawCardImg(g, r, bt, bx, 8.0, 50.0, 70.0, false)
+            r.drawTextCentered(g.font, "" + PC[bt], bx, 50.0, 58.0, #FFFFFFFF)
+            bi = bi + 1
+        }
+    } else if g.barType == BAR_BOWLING {
+        // 保龄球三张卡
+        for 0 : 2 to i {
+            var bx = 77.0 + _float(i) * 51.0
+            var sel = g.selCard == i
+            if sel {
+                r.setColor(#FFD54F66)
+                r.fillRoundedRect(bx - 2.0, 6.0, 54.0, 74.0, 6.0)
+            }
+            drawCardImg(g, r, 29 + i, bx, 8.0, 50.0, 70.0, false)
+        }
+    } else {
+        // 已选卡片
+        var ci = 0
+        for g.chosen to t {
+            var cx = 77.0 + _float(ci) * 51.0
+            var sel = g.selCard == ci
+            if sel {
+                r.setColor(#FFD54F66)
+                r.fillRoundedRect(cx - 2.0, 6.0, 54.0, 74.0, 6.0)
+            }
+            var cd = g.cardCd[t]
+            var afford = g.sun >= PC[t]
+            drawCardImg(g, r, t, cx, 8.0, 50.0, 70.0, cd > 0)
+            if cd > 0 {
+                var k = _float(cd) / _float(PCD[t])
+                r.setColor(#000000AA)
+                r.fillRect(cx, 8.0, 50.0, 70.0 * k)
+            }
+            r.drawTextCentered(g.font, "" + PC[t], cx, 50.0, 58.0, if afford then #FFFFFFFF else #EF5350FF)
+            ci = ci + 1
+        }
+    }
+
+    // 铲子
+    if g.hasShovel {
+        drawTex(r, g.texShovelBox, 608.0, 1.0, 71.0, 67.0)
+        if g.shovelMode or inRect(g.mx, g.my, 608.0, 1.0, 71.0, 67.0) {
+            r.setColor(#FFD54F44)
+            r.fillRoundedRect(608.0, 1.0, 71.0, 67.0, 8.0)
+        }
+        drawTex(r, g.texShovel, 608.0, 1.0, 71.0, 67.0)
+    }
+
+    // 关卡进度条
+    var total = g.numFlags * 10
+    var pw = _float(g.wave) / _float(total) * 150.0
+    drawTex(r, g.texProgressBar, 600.0, 574.0, 158.0, 26.0)
+    r.setColor(#7CB342FF)
+    r.fillRect(606.0, 580.0, pw + 5.0, 9.0)
+    for 1 : g.numFlags to i {
+        var fx = 600.0 + _float(i) * 150.0 / _float(g.numFlags) + 5.0
+        drawTex(r, g.texProgressFlag, fx, 571.0, 20.0, 18.0)
+    }
+    drawTex(r, g.texProgressHead, 600.0 - pw + 145.0, 571.0, 23.0, 25.0)
+
+    // 小菜单（暂停）按钮
+    drawTex(r, g.texLittleMenu, 690.0, 0.0, 119.0, 34.0)
+
+    // 波次横幅
+    if g.bannerT > 0 {
+        var fade = 1.0
+        if g.bannerT < 30 { fade = _float(g.bannerT) / 30.0 }
+        var ta = _int(255.0 * fade)
+        r.drawTextCentered(g.fontBig, g.banner, 0.0, 800.0, 240.0, (ta << 24) | 0xFFD54F)
+    }
+
+    // 种植预览
+    if g.selCard >= 0 and g.mx > g.mapOX and g.mx < g.mapOX + 693.0 and g.my > g.mapOY {
+        var col = colAt(g, g.mx)
+        var row = rowAt(g, g.my)
+        if col >= 0 and col <= 8 and row >= 0 and row < g.rows {
+            var t = -1
+            if g.barType == BAR_MOVE {
+                if g.selCard < g.belt.len() { t = g.belt[g.selCard] }
+            } else if g.barType == BAR_BOWLING {
+                t = P_BOWL1 + g.selCard
+            } else if g.selCard < g.chosen.len() {
+                t = g.chosen[g.selCard]
+            }
+            if t >= 0 {
+                var ok = canPlantAt(g, row, col, t)
+                var px = g.mapOX + _float(col * g.cellW)
+                var py = g.mapOY + _float(row * g.cellH)
+                r.setColor(if ok then #FFFFFF22 else #EF535022)
+                r.fillRect(px, py, _float(g.cellW), _float(g.cellH))
+                r.setColor(if ok then #8BC34AFF else #EF5350FF)
+                r.drawRect(px, py, _float(g.cellW), _float(g.cellH))
+                if ok and t < PLANT_N {
+                    drawAnim(r, g.anims[plantAnim(g, ghostPlant(t))], 0.0, cellCX(g, col), cellFY(g, row))
+                }
+            }
+        }
+    }
+
+    // 铲子跟随鼠标
+    if g.shovelMode {
+        drawTex(r, g.texShovel, g.mx - 24.0, g.my - 34.0, 48.0, 48.0)
+    }
+}
+
+// 建造一个"幽灵植物"用于种植预览
+func ghostPlant(int t): Plant {
+    var p = new Plant()
+    p.ptype = t
+    p.hp = 1.0
+    p.maxHp = 1.0
+    p.alive = true
+    return p
+}
+
+// ==================== 各界面渲染 ====================
+
+func drawMenu(Game g, Renderer r) {
+    drawTexCrop(r, g.texMenuBg, 80.0, 0.0, 800.0, 600.0, 0.0, 0.0, 800.0, 600.0)
+    var hovAdv = inRect(g.mx, g.my, 400.0, 60.0, 330.0, 144.0)
+    var hovLg = inRect(g.mx, g.my, 397.0, 175.0, 317.0, 135.0)
+    var hovOpt = inRect(g.mx, g.my, 560.0, 490.0, 81.0, 31.0)
+    var hovHelp = inRect(g.mx, g.my, 653.0, 520.0, 48.0, 22.0)
+    var hovExit = inRect(g.mx, g.my, 730.0, 507.0, 47.0, 27.0)
+    drawTex(r, if hovAdv then g.texAdventure1 else g.texAdventure0, 400.0, 60.0, 330.0, 144.0)
+    drawTex(r, if hovLg then g.texLittle1 else g.texLittle0, 397.0, 175.0, 317.0, 135.0)
+    drawTex(r, g.texOptionBtn, 560.0, 490.0, 81.0, 31.0)
+    drawTex(r, g.texHelpBtn, 653.0, 520.0, 48.0, 22.0)
+    drawTex(r, g.texExitBtn, 730.0, 507.0, 47.0, 27.0)
+    if hovOpt { r.setColor(#FFD54F33); r.fillRect(560.0, 490.0, 81.0, 31.0) }
+    if hovHelp { r.setColor(#FFD54F33); r.fillRect(653.0, 520.0, 48.0, 22.0) }
+    if hovExit { r.setColor(#FFD54F33); r.fillRect(730.0, 507.0, 47.0, 27.0) }
+    // 奖杯
+    if g.advComplete > 0 and g.lgComplete > 0 {
+        drawTex(r, g.texTrophyGold, 0.0, 280.0, 157.0, 269.0)
+    } else if g.advComplete > 0 or g.lgComplete > 0 {
+        drawTex(r, g.texTrophySilver, 0.0, 280.0, 157.0, 269.0)
+    }
+    // 选项大菜单
+    if g.showMenu {
+        drawTex(r, g.texBigMenu, 150.0, 0.0, 550.0, 550.0)
+        drawUnivBtn(r, g.texUnivBtn, g.font, "返回游戏", 425.0, 460.0, 228.0, 53.0, btnHover(g, 425.0, 480.0, 228.0, 53.0))
+        drawTex(r, g.texVolBtn, 450.0, 250.0, 39.0, 41.0)
+        drawTex(r, g.texVolBtn, 500.0, 250.0, 39.0, 41.0)
+        r.drawText(g.fontBig, "-", 465.0, 252.0, #FFFFFFFF)
+        r.drawText(g.fontBig, "+", 510.0, 250.0, #FFFFFFFF)
+        r.drawText(g.fontBig, "音量 " + _int(g.volume * 100.0) + "%", 275.0, 250.0, #FFFFFFFF)
+    }
+}
+
+func drawLevels(Game g, Renderer r) {
+    r.clearColor(#1B5E20FF)
+    r.drawTextCentered(g.fontBig, "选择关卡", 0.0, 800.0, 30.0, #FFD54FFF)
+    for 0 : LV_COUNT - 1 to i {
+        var bx = 90.0 + _float(i % 4) * 175.0
+        var by = 105.0 + _float(i / 4) * 100.0
+        var locked = (i + 1) > g.levelNum
+        var hov = not locked and btnHover(g, bx + 85.0, by + 27.0, 170.0, 54.0)
+        r.setColor(if locked then #555555FF else if hov then #4CAF50FF else #2E7D32FF)
+        r.fillRoundedRect(bx, by, 170.0, 54.0, 8.0)
+        r.setColor(if locked then #777777FF else #A5D6A7FF)
+        r.drawRoundedRect(bx, by, 170.0, 54.0, 8.0)
+        var label = LVTI[i]
+        if locked { label = "未解锁" }
+        r.drawTextCentered(g.font, label, bx, 170.0, by + 18.0, if locked then #AAAAAAFF else #FFFFFFFF)
+    }
+    drawBtn(r, g.font, "返回主菜单", 400.0, 545.0, 200.0, 44.0, btnHover(g, 400.0, 545.0, 200.0, 44.0))
+}
+
+func drawLgSel(Game g, Renderer r) {
+    r.clearColor(#1B5E20FF)
+    r.drawTextCentered(g.fontBig, "玩玩小游戏", 0.0, 800.0, 30.0, #FFD54FFF)
+    var names = ["坚果保龄球", "坚果保龄球 II", "大决战 · 昼", "大决战 · 夜", "大决战 · 池", "传送带挑战"]
+    for 0 : 5 to i {
+        var bx = 120.0 + _float(i % 2) * 300.0
+        var by = 110.0 + _float(i / 2) * 110.0
+        var locked = (i + 1) > g.lgNum
+        var hov = not locked and btnHover(g, bx + 130.0, by + 30.0, 260.0, 60.0)
+        r.setColor(if locked then #555555FF else if hov then #4CAF50FF else #2E7D32FF)
+        r.fillRoundedRect(bx, by, 260.0, 60.0, 8.0)
+        r.setColor(if locked then #777777FF else #A5D6A7FF)
+        r.drawRoundedRect(bx, by, 260.0, 60.0, 8.0)
+        r.drawTextCentered(g.font, names[i], bx, 260.0, by + 20.0, if locked then #AAAAAAFF else #FFFFFFFF)
+    }
+    drawBtn(r, g.font, "返回主菜单", 400.0, 545.0, 200.0, 44.0, btnHover(g, 400.0, 545.0, 200.0, 44.0))
+}
+
+func drawChoose(Game g, Renderer r) {
+    drawBackground(g, r)
+    r.setColor(#000000AA)
+    r.fillRect(0.0, 0.0, 800.0, 600.0)
+    drawTex(r, g.texChooserBg, 0.0, 0.0, 596.0, 87.0)
+    drawTex(r, g.texPanelBg, 0.0, 87.0, 465.0, 513.0)
+    r.drawText(g.font, "" + g.sun, 21.0, 63.0, #FFFFFFFF)
+    // 已选卡片行
+    var ci = 0
+    for g.chosen to t {
+        var cx = 77.0 + _float(ci) * 51.0
+        drawCardImg(g, r, t, cx, 8.0, 50.0, 70.0, false)
+        r.drawTextCentered(g.font, "" + PC[t], cx, 50.0, 58.0, #FFFFFFFF)
+        ci = ci + 1
+    }
+    // 全部卡片网格
+    for 0 : PLANT_N - 1 to i {
+        var gx = 22.0 + _float(i % 8) * 53.0
+        var gy = 125.0 + _float(i / 8) * 72.0
+        var picked = false
+        for g.chosen to t { if t == i { picked = true } }
+        var dim = picked or cardNotRecommend(g, i) == 1
+        drawCardImg(g, r, i, gx, gy, 50.0, 70.0, dim)
+        r.drawTextCentered(g.font, "" + PC[i], gx, 50.0, gy + 50.0, #FFFFFFFF)
+    }
+    if g.chosen.len() >= 10 {
+        drawTex(r, g.texStartBtn, 155.0, 547.0, 154.0, 37.0)
+    } else {
+        r.drawTextCentered(g.font, "请选择 10 张卡片（已选 " + g.chosen.len() + "）", 0.0, 800.0, 556.0, #FFFFFFFF)
+    }
+    drawBtn(r, g.font, "返回", 700.0, 560.0, 120.0, 36.0, btnHover(g, 700.0, 560.0, 120.0, 36.0))
+}
+
+func cardNotRecommend(Game g, int t): int {
+    if isWaterPlant(t) and not g.isPool { return 1 }
+    if t == P_GRAVEBUSTER and not g.isNight { return 1 }
+    if isSleepPlant(t) and not g.isNight { return 1 }
+    if t == P_COFFEEBEAN and g.isNight { return 1 }
+    return 0
+}
+
+func drawPause(Game g, Renderer r) {
+    r.setColor(#000000BB)
+    r.fillRect(0.0, 0.0, 800.0, 600.0)
+    drawTex(r, g.texBigMenu, 150.0, 0.0, 550.0, 550.0)
+    drawUnivBtn(r, g.texUnivBtn, g.font, "返回游戏", 425.0, 480.0, 228.0, 53.0, btnHover(g, 425.0, 480.0, 228.0, 53.0))
+    drawTex(r, g.texRestartBtn, 295.0, 325.0, 228.0, 50.0)
+    drawTex(r, g.texMainMenuBtn, 299.0, 372.0, 227.0, 47.0)
+    drawTex(r, g.texVolBtn, 450.0, 250.0, 39.0, 41.0)
+    drawTex(r, g.texVolBtn, 500.0, 250.0, 39.0, 41.0)
+    r.drawText(g.fontBig, "-", 460.0, 252.0, #FFFFFFFF)
+    r.drawText(g.fontBig, "+", 510.0, 250.0, #FFFFFFFF)
+    r.drawText(g.fontBig, "音量 " + _int(g.volume * 100.0) + "%", 275.0, 250.0, #FFFFFFFF)
+}
+
+func drawWin(Game g, Renderer r) {
+    drawBackground(g, r)
+    r.setColor(#000000AA)
+    r.fillRect(0.0, 0.0, 800.0, 600.0)
+    drawTex(r, g.texVictory, 12.0, 26.0, 776.0, 547.0)
+    drawBtn(r, g.fontBig, "下 一 关", 300.0, 560.0, 240.0, 46.0, btnHover(g, 300.0, 560.0, 240.0, 46.0))
+    drawBtn(r, g.fontBig, "主 菜 单", 560.0, 560.0, 200.0, 46.0, btnHover(g, 560.0, 560.0, 200.0, 46.0))
+}
+
+func drawLose(Game g, Renderer r) {
+    drawBackground(g, r)
+    r.setColor(#000000AA)
+    r.fillRect(0.0, 0.0, 800.0, 600.0)
+    drawTex(r, g.texLose, 118.0, 66.0, 564.0, 468.0)
+    drawBtn(r, g.fontBig, "重 新 开 始", 300.0, 560.0, 240.0, 46.0, btnHover(g, 300.0, 560.0, 240.0, 46.0))
+    drawBtn(r, g.fontBig, "主 菜 单", 560.0, 560.0, 200.0, 46.0, btnHover(g, 560.0, 560.0, 200.0, 46.0))
+}
+
+func drawAward(Game g, Renderer r) {
+    r.clearColor(#1B5E20FF)
+    r.drawTextCentered(g.fontBig, "恭喜！你完成了所有关卡！", 0.0, 800.0, 120.0, #FFD54FFF)
+    if g.advComplete > 0 and g.lgComplete > 0 {
+        drawTex(r, g.texTrophyGold, 320.0, 170.0, 157.0, 269.0)
+    } else {
+        drawTex(r, g.texTrophySilver, 320.0, 170.0, 157.0, 269.0)
+    }
+    r.drawTextCentered(g.font, "冒险模式完成 " + g.advComplete + " 轮    小游戏完成 " + g.lgComplete + " 轮", 0.0, 800.0, 460.0, #F1F8E9FF)
+    drawBtn(r, g.fontBig, "主 菜 单", 400.0, 540.0, 240.0, 46.0, btnHover(g, 400.0, 540.0, 240.0, 46.0))
+}
+
+func drawHelp(Game g, Renderer r) {
+    r.clearColor(#1B5E20FF)
+    drawTex(r, g.texHelpImg, 93.0, 60.0, 613.0, 399.0)
+    var lines = [
+        "左键点击卡片选择植物，再点击草坪种植",
+        "点击阳光收集；向日葵和天上都会产出阳光",
+        "按 S 或点击铲子进入铲除模式，可移除植物",
+        "按 P 暂停，R 重开，M 静音，ESC 取消选择",
+        "僵尸走过小推车会被碾平；小推车用掉的那路再被突破就输了",
+        "坚持到最后一波且僵尸全清即通关"
+    ]
+    var ty = 480.0
+    for lines to line {
+        r.drawText(g.font, line, 60.0, ty, #F1F8E9FF)
+        ty = ty + 20.0
+    }
+    drawBtn(r, g.fontBig, "返 回", 400.0, 578.0, 160.0, 40.0, btnHover(g, 400.0, 578.0, 160.0, 40.0))
+}
+
+func drawLoading(Game g, Renderer r) {
+    r.clearColor(#1B5E20FF)
+    r.drawTextCentered(g.fontBig, "植物大战僵尸", 0.0, 800.0, 240.0, #FFD54FFF)
+    r.drawTextCentered(g.font, "资源加载中… " + _int(_float(g.loadIdx) * 100.0 / 137.0) + "%", 0.0, 800.0, 300.0, #F1F8E9FF)
+    r.setColor(#3E2A10FF)
+    r.fillRoundedRect(250.0, 330.0, 300.0, 16.0, 8.0)
+    r.setColor(#7CB342FF)
+    r.fillRoundedRect(254.0, 334.0, 292.0 * _float(g.loadIdx) / 137.0, 8.0, 4.0)
+}
+
+func renderGame(Game g, Renderer r) {
+    if g.state == ST_MENU {
+        drawMenu(g, r)
+        return
+    }
+    if g.state == ST_LEVELS {
+        drawLevels(g, r)
+        return
+    }
+    if g.state == ST_LGSEL {
+        drawLgSel(g, r)
+        return
+    }
+    if g.state == ST_CHOOSE {
+        drawChoose(g, r)
+        return
+    }
+    if g.state == ST_HELP {
+        drawHelp(g, r)
+        return
+    }
+    if g.state == ST_PAUSE {
+        drawBackground(g, r)
+        drawField(g, r)
+        drawBullets(g, r)
+        drawSuns(g, r)
+        drawEffects(g, r)
+        drawHUD(g, r)
+        drawPause(g, r)
+        return
+    }
+    if g.state == ST_WIN {
+        drawWin(g, r)
+        return
+    }
+    if g.state == ST_LOSE {
+        drawLose(g, r)
+        return
+    }
+    if g.state == ST_AWARD {
+        drawAward(g, r)
+        return
+    }
+    // 战斗中
+    drawBackground(g, r)
+    // 种植网格提示（铲子模式）
+    if g.shovelMode and g.mx > g.mapOX and g.my > g.mapOY {
+        var col = colAt(g, g.mx)
+        var row = rowAt(g, g.my)
+        r.setColor(#EF535033)
+        r.fillRect(g.mapOX + _float(col * g.cellW), g.mapOY + _float(row * g.cellH), _float(g.cellW), _float(g.cellH))
+    }
+    drawField(g, r)
+    drawBullets(g, r)
+    drawSuns(g, r)
+    drawEffects(g, r)
+    drawHUD(g, r)
+}
+
+// ==================== 点击处理 ====================
+
+func adjustVolume(Game g, float delta) {
+    g.volume = g.volume + delta
+    if g.volume < 0.0 { g.volume = 0.0 }
+    if g.volume > 1.0 { g.volume = 1.0 }
+    if g.audioOk {
+        g.bgm.setVolume(if g.muted then 0.0 else g.volume)
+    }
+    saveGame(g)
+    sfx(g, g.sfxClick)
+}
+
+func toggleMute(Game g) {
+    g.muted = not g.muted
+    if g.audioOk {
+        g.bgm.setVolume(if g.muted then 0.0 else g.volume)
+    }
+}
+
+func onClick(Game g, float mx, float my) {
+    g.mx = mx
+    g.my = my
+
+    // ---- 主菜单 ----
+    if g.state == ST_MENU {
+        if g.showMenu {
+            if btnHit(g, 425.0, 480.0, 228.0, 53.0) { g.showMenu = false; sfx(g, g.sfxClick); return }
+            if inRect(mx, my, 450.0, 250.0, 39.0, 41.0) { adjustVolume(g, -0.05); return }
+            if inRect(mx, my, 500.0, 250.0, 39.0, 41.0) { adjustVolume(g, 0.05); return }
+            return
+        }
+        if inRect(mx, my, 400.0, 60.0, 330.0, 144.0) {
+            g.state = ST_LEVELS
+            sfx(g, g.sfxClick)
+            playBgm(g, "intro.ogg")
+        } else if inRect(mx, my, 397.0, 175.0, 317.0, 135.0) {
+            g.state = ST_LGSEL
+            sfx(g, g.sfxClick)
+        } else if inRect(mx, my, 560.0, 490.0, 81.0, 31.0) {
+            g.showMenu = true
+            sfx(g, g.sfxClick)
+        } else if inRect(mx, my, 653.0, 520.0, 48.0, 22.0) {
+            g.state = ST_HELP
+            sfx(g, g.sfxClick)
+        } else if inRect(mx, my, 730.0, 507.0, 47.0, 27.0) {
+            g.quitReq = true
+        }
+        return
+    }
+
+    // ---- 关卡选择 ----
+    if g.state == ST_LEVELS {
+        for 0 : LV_COUNT - 1 to i {
+            var bx = 90.0 + _float(i % 4) * 175.0
+            var by = 105.0 + _float(i / 4) * 100.0
+            if inRect(mx, my, bx, by, 170.0, 54.0) {
+                if (i + 1) <= g.levelNum {
+                    initLevel(g, MODE_ADV, i + 1)
+                    sfx(g, g.sfxClick)
+                } else {
+                    sfx(g, g.sfxBuzzer)
+                }
+                return
+            }
+        }
+        if btnHit(g, 400.0, 545.0, 200.0, 44.0) {
+            g.state = ST_MENU
+            playBgm(g, "intro.ogg")
+            sfx(g, g.sfxClick)
+        }
+        return
+    }
+
+    // ---- 小游戏选择 ----
+    if g.state == ST_LGSEL {
+        for 0 : 5 to i {
+            var bx = 120.0 + _float(i % 2) * 300.0
+            var by = 110.0 + _float(i / 2) * 110.0
+            if inRect(mx, my, bx, by, 260.0, 60.0) {
+                if (i + 1) <= g.lgNum {
+                    initLevel(g, MODE_LG, i + 1)
+                    sfx(g, g.sfxClick)
+                } else {
+                    sfx(g, g.sfxBuzzer)
+                }
+                return
+            }
+        }
+        if btnHit(g, 400.0, 545.0, 200.0, 44.0) {
+            g.state = ST_MENU
+            sfx(g, g.sfxClick)
+        }
+        return
+    }
+
+    // ---- 选卡 ----
+    if g.state == ST_CHOOSE {
+        // 点已选卡片 = 取消
+        var ci = 0
+        for g.chosen to t {
+            var cx = 77.0 + _float(ci) * 51.0
+            if inRect(mx, my, cx, 8.0, 50.0, 70.0) {
+                var keep = []
+                var bi = 0
+                for g.chosen to tt {
+                    if bi != ci { keep.add(tt) }
+                    bi = bi + 1
+                }
+                g.chosen = keep
+                sfx(g, g.sfxTap)
+                return
+            }
+            ci = ci + 1
+        }
+        // 点卡片网格
+        if mx < 480.0 and my > 100.0 {
+            var idx = _int((my - 125.0) / 69.0) * 8 + _int((mx - 22.0) / 53.0)
+            if idx >= 0 and idx < PLANT_N and mx > 22.0 and my > 125.0 {
+                var gx = 22.0 + _float(idx % 8) * 53.0
+                var gy = 125.0 + _float(idx / 8) * 69.0
+                if inRect(mx, my, gx, gy, 50.0, 70.0) {
+                    var has = false
+                    for g.chosen to t { if t == idx { has = true } }
+                    if has {
+                        var keep2 = []
+                        for g.chosen to tt { if tt != idx { keep2.add(tt) } }
+                        g.chosen = keep2
+                        sfx(g, g.sfxTap)
+                    } else if g.chosen.len() < 10 {
+                        g.chosen.add(idx)
+                        sfx(g, g.sfxTap)
+                    } else {
+                        sfx(g, g.sfxBuzzer)
+                    }
+                    return
+                }
+            }
+        }
+        // 开始按钮
+        if g.chosen.len() >= 10 and inRect(mx, my, 155.0, 547.0, 154.0, 37.0) {
+            startPlay(g)
+            sfx(g, g.sfxClick)
+            return
+        }
+        if btnHit(g, 700.0, 560.0, 120.0, 36.0) {
+            g.state = ST_LEVELS
+            sfx(g, g.sfxClick)
+        }
+        return
+    }
+
+    // ---- 暂停 ----
+    if g.state == ST_PAUSE {
+        if btnHit(g, 425.0, 480.0, 228.0, 53.0) {
+            g.state = ST_PLAY
+            sfx(g, g.sfxClick)
+            return
+        }
+        if inRect(mx, my, 295.0, 325.0, 228.0, 50.0) {
+            initLevel(g, g.mode, if g.mode == MODE_ADV then g.level else g.lg)
+            return
+        }
+        if inRect(mx, my, 299.0, 372.0, 227.0, 47.0) {
+            g.state = ST_MENU
+            g.showMenu = false
+            playBgm(g, "intro.ogg")
+            sfx(g, g.sfxClick)
+            return
+        }
+        if inRect(mx, my, 450.0, 250.0, 39.0, 41.0) { adjustVolume(g, -0.05); return }
+        if inRect(mx, my, 500.0, 250.0, 39.0, 41.0) { adjustVolume(g, 0.05); return }
+        return
+    }
+
+    // ---- 通关 ----
+    if g.state == ST_WIN {
+        if btnHit(g, 300.0, 560.0, 240.0, 46.0) {
+            initLevel(g, g.mode, if g.mode == MODE_ADV then g.level else g.lg)
+            sfx(g, g.sfxClick)
+        } else if btnHit(g, 560.0, 560.0, 200.0, 46.0) {
+            g.state = ST_MENU
+            playBgm(g, "intro.ogg")
+            sfx(g, g.sfxClick)
+        }
+        return
+    }
+
+    // ---- 失败 ----
+    if g.state == ST_LOSE {
+        if btnHit(g, 300.0, 560.0, 240.0, 46.0) {
+            initLevel(g, g.mode, if g.mode == MODE_ADV then g.level else g.lg)
+            sfx(g, g.sfxClick)
+        } else if btnHit(g, 560.0, 560.0, 200.0, 46.0) {
+            g.state = ST_MENU
+            playBgm(g, "intro.ogg")
+            sfx(g, g.sfxClick)
+        }
+        return
+    }
+
+    // ---- 奖杯 ----
+    if g.state == ST_AWARD {
+        if btnHit(g, 400.0, 540.0, 240.0, 46.0) {
+            g.state = ST_MENU
+            playBgm(g, "intro.ogg")
+            sfx(g, g.sfxClick)
+        }
+        return
+    }
+
+    // ---- 帮助 ----
+    if g.state == ST_HELP {
+        if btnHit(g, 400.0, 578.0, 160.0, 40.0) {
+            g.state = ST_MENU
+            sfx(g, g.sfxClick)
+        }
+        return
+    }
+
+    // ---- 战斗中 ----
+    if g.state != ST_PLAY { return }
+
+    // 收阳光
+    if collectSunAt(g, mx, my) { return }
+
+    // 暂停按钮
+    if inRect(mx, my, 690.0, 0.0, 119.0, 34.0) {
+        g.state = ST_PAUSE
+        sfx(g, g.sfxClick)
+        return
+    }
+
+    // 铲子
+    if g.hasShovel and inRect(mx, my, 608.0, 1.0, 71.0, 67.0) {
+        g.shovelMode = not g.shovelMode
+        g.selCard = -1
+        sfx(g, g.sfxTap)
+        return
+    }
+
+    // 传送带卡片
+    if g.barType == BAR_MOVE {
+        var bi = 0
+        for g.belt to bt {
+            if inRect(mx, my, 34.0 + _float(bi) * 52.0, 8.0, 50.0, 70.0) {
+                g.selCard = bi
+                g.shovelMode = false
+                sfx(g, g.sfxTap)
+                return
+            }
+            bi = bi + 1
+        }
+    }
+
+    // 保龄球卡片
+    if g.barType == BAR_BOWLING {
+        for 0 : 2 to i {
+            if inRect(mx, my, 77.0 + _float(i) * 51.0, 8.0, 50.0, 70.0) {
+                g.selCard = i
+                g.shovelMode = false
+                sfx(g, g.sfxTap)
+                return
+            }
+        }
+    }
+
+    // 已选卡片
+    if g.barType == BAR_STATIC {
+        var ci2 = 0
+        for g.chosen to t {
+            if inRect(mx, my, 77.0 + _float(ci2) * 51.0, 8.0, 50.0, 70.0) {
+                if g.cardCd[t] > 0 or g.sun < PC[t] {
+                    sfx(g, g.sfxBuzzer)
+                    return
+                }
+                g.selCard = ci2
+                g.shovelMode = false
+                sfx(g, g.sfxTap)
+                return
+            }
+            ci2 = ci2 + 1
+        }
+    }
+
+    // 草坪区域
+    if mx < g.mapOX or mx > g.mapOX + 693.0 or my < g.mapOY { return }
+    var col = colAt(g, mx)
+    var row = rowAt(g, my)
+    if col < 0 or col > 8 or row < 0 or row >= g.rows { return }
+    if g.shovelMode {
+        doShovel(g, row, col)
+        return
+    }
+    if g.selCard >= 0 {
+        tryPlant(g, row, col)
+    }
+}
+
+// ==================== 事件 ====================
+
+func handleEvent(Game g, Event e): bool {
+    if g.quitReq { return false }
+    if e.isQuit() or e.isWindowClose() { return false }
+    if e.isMouseMotion() {
+        var[float, float](mx, my) = e.mousePos()
+        g.mx = mx
+        g.my = my
+    }
+    if e.isMouseButtonDown() {
+        var[float, float](cx, cy) = e.mousePos()
+        onClick(g, cx, cy)
+        return true
+    }
+    if e.isKeyDown() {
+        int sc = e.scancode()
+        if sc == Scancode.ESCAPE {
+            if g.state == ST_HELP { g.state = ST_MENU; return true }
+            if g.state == ST_CHOOSE { g.state = ST_LEVELS; return true }
+            if g.state == ST_LEVELS or g.state == ST_LGSEL { g.state = ST_MENU; return true }
+            if g.selCard >= 0 { g.selCard = -1; return true }
+            if g.shovelMode { g.shovelMode = false; return true }
+            if g.showMenu { g.showMenu = false; return true }
+            return false
+        }
+        if sc == Scancode.P {
+            if g.state == ST_PLAY { g.state = ST_PAUSE }
+            else if g.state == ST_PAUSE { g.state = ST_PLAY }
+            return true
+        }
+        if sc == Scancode.M { toggleMute(g); return true }
+        if sc == Scancode.R {
+            if g.state == ST_PLAY or g.state == ST_PAUSE or g.state == ST_WIN or g.state == ST_LOSE {
+                initLevel(g, g.mode, if g.mode == MODE_ADV then g.level else g.lg)
+                return true
+            }
+            return true
+        }
+        if sc == Scancode.S {
+            if g.state == ST_PLAY and g.hasShovel {
+                g.shovelMode = not g.shovelMode
+                g.selCard = -1
+                return true
+            }
+        }
+        // 数字键选卡
+        if g.state == ST_PLAY {
+            if sc == Scancode._1 { selectCard(g, 0); return true }
+            if sc == Scancode._2 { selectCard(g, 1); return true }
+            if sc == Scancode._3 { selectCard(g, 2); return true }
+            if sc == Scancode._4 { selectCard(g, 3); return true }
+            if sc == Scancode._5 { selectCard(g, 4); return true }
+            if sc == Scancode._6 { selectCard(g, 5); return true }
+            if sc == Scancode._7 { selectCard(g, 6); return true }
+            if sc == Scancode._8 { selectCard(g, 7); return true }
+            if sc == Scancode._9 { selectCard(g, 8); return true }
+            if sc == Scancode._0 { selectCard(g, 9); return true }
+        }
+    }
+    return true
+}
+
+func selectCard(Game g, int i) {
+    if g.barType == BAR_MOVE {
+        if i < g.belt.len() { g.selCard = i; g.shovelMode = false }
+        return
+    }
+    if g.barType == BAR_BOWLING {
+        if i < 3 { g.selCard = i; g.shovelMode = false }
+        return
+    }
+    if i < g.chosen.len() {
+        var t = g.chosen[i]
+        if g.cardCd[t] > 0 or g.sun < PC[t] {
+            sfx(g, g.sfxBuzzer)
+            return
+        }
+        g.selCard = i
+        g.shovelMode = false
+    }
+}
+
+// ==================== 初始化与主函数 ====================
+
+func newGame(): Game {
+    initCrops()
+    var g = new Game()
+    g.state = LOADING
+    g.frame = 0
+    g.muted = false
+    g.quitReq = false
+    g.uiOk = false
+    g.loadIdx = 0
+    g.showMenu = false
+    g.anims = []
+    g.animOk = []
+    for 0 : ANIM_N - 1 to i {
+        var an = new FrameAnim()
+        g.anims.add(an)
+        g.animOk.add(false)
+    }
+    g.texCards = []
+    for 0 : 31 to i { g.texCards.add(null) }
+    return g
+}
+
+func loadUI(Game g, Renderer r) {
+    var ip = dirs.res_dir() + "/image/"
+    g.texBgs = []
+    for 0 : 3 to i {
+        g.texBgs.add(SDL3.loadImageTexture(r.handle, ip + "Items/Background/Background_" + i + ".jpg"))
+    }
+    g.texBg = g.texBgs[0]
+    g.texMenuBg    = SDL3.loadImageTexture(r.handle, ip + "Screen/MainMenu.png")
+    g.texChooserBg = SDL3.loadImageTexture(r.handle, ip + "Screen/ChooserBackground.png")
+    g.texPanelBg   = SDL3.loadImageTexture(r.handle, ip + "Screen/PanelBackground.png")
+    g.texStartBtn  = SDL3.loadImageTexture(r.handle, ip + "Screen/StartButton.png")
+    g.texShovelBox = SDL3.loadImageTexture(r.handle, ip + "Screen/shovelBox.png")
+    g.texShovel    = SDL3.loadImageTexture(r.handle, ip + "Screen/shovel.png")
+    g.texCar       = SDL3.loadImageTexture(r.handle, ip + "Screen/car.png")
+    g.texProgressBar  = SDL3.loadImageTexture(r.handle, ip + "Screen/LevelProgressBar.png")
+    g.texProgressFlag = SDL3.loadImageTexture(r.handle, ip + "Screen/LevelProgressFlag.png")
+    g.texProgressHead = SDL3.loadImageTexture(r.handle, ip + "Screen/LevelProgressZombieHead.png")
+    g.texLittleMenu   = SDL3.loadImageTexture(r.handle, ip + "Screen/littleMenu.png")
+    g.texBigMenu      = SDL3.loadImageTexture(r.handle, ip + "Screen/bigMenu.png")
+    g.texRestartBtn   = SDL3.loadImageTexture(r.handle, ip + "Screen/restartButton.png")
+    g.texMainMenuBtn  = SDL3.loadImageTexture(r.handle, ip + "Screen/mainMenuButton.png")
+    g.texVolBtn       = SDL3.loadImageTexture(r.handle, ip + "Screen/volumeButton.png")
+    g.texUnivBtn      = SDL3.loadImageTexture(r.handle, ip + "Screen/universalButton.png")
+    g.texAdventure0   = SDL3.loadImageTexture(r.handle, ip + "Screen/Adventure_0.png")
+    g.texAdventure1   = SDL3.loadImageTexture(r.handle, ip + "Screen/Adventure_1.png")
+    g.texLittle0      = SDL3.loadImageTexture(r.handle, ip + "Screen/littleGameButton_0.png")
+    g.texLittle1      = SDL3.loadImageTexture(r.handle, ip + "Screen/littleGameButton_1.png")
+    g.texOptionBtn    = SDL3.loadImageTexture(r.handle, ip + "Screen/optionButton_0.png")
+    g.texHelpBtn      = SDL3.loadImageTexture(r.handle, ip + "Screen/help_0.png")
+    g.texExitBtn      = SDL3.loadImageTexture(r.handle, ip + "Screen/exit_0.png")
+    g.texTrophySilver = SDL3.loadImageTexture(r.handle, ip + "Screen/sunflowerTrophy.png")
+    g.texTrophyGold   = SDL3.loadImageTexture(r.handle, ip + "Screen/sunflowerTrophy.png")
+    g.texVictory      = SDL3.loadImageTexture(r.handle, ip + "Screen/GameVictory.png")
+    g.texLose         = SDL3.loadImageTexture(r.handle, ip + "Screen/GameLose.jpg")
+    g.texHelpImg      = SDL3.loadImageTexture(r.handle, ip + "Screen/HelpScreen.png")
+    g.texMoveBg       = SDL3.loadImageTexture(r.handle, ip + "Screen/MoveBackground.png")
+    // 卡片
+    for 0 : PLANT_N - 1 to i {
+        g.texCards[i] = SDL3.loadImageTexture(r.handle, ip + "Cards/" + PCRD[i] + ".png")
+    }
+    g.texCards[29] = SDL3.loadImageTexture(r.handle, ip + "Cards/card_wallnut.png")
+    g.texCards[30] = SDL3.loadImageTexture(r.handle, ip + "Cards/card_redwallnut.png")
+    g.texCards[31] = SDL3.loadImageTexture(r.handle, ip + "Cards/card_giantwallnut.png")
+    g.uiOk = true
+}
+
+// 按关卡切换背景图（用 loadUI 预载的四张缓存，不重复加载）
+func setLevelBg(Game g) {
+    if g.texBgs.len() < 4 { return }
+    var idx = 0
+    if g.isNight { idx = 1 }
+    else if g.isPool { idx = 2 }
+    else if g.bgType == BG_FOG { idx = 3 }
+    g.texBg = g.texBgs[idx]
+}
+
+main() {
+    _console(false)
+    var win = SDL3.createWindow({
+        title: "植物大战僵尸 Plants vs. Zombies",
+        w: WIN_W,
+        h: WIN_H
+    })
+    if not win.ok {
+        print("[错误] 窗口创建失败")
+        return
+    }
+    SDL3.ttfInit()
+    var fontPath = dirs.res_dir() + "/font/DroidSansFallback.ttf"
+    var font = SDL3.createFont(fontPath, 15.0)
+    if not font.ok { font = SDL3.createFontAuto(15.0) }
+    var fontBig = SDL3.createFont(fontPath, 30.0)
+    if not fontBig.ok { fontBig = SDL3.createFontAuto(30.0) }
+
+    var g = newGame()
+    g.font = font
+    g.fontBig = fontBig
+    g.fontOk = font.ok
+    loadSave(g)
+    initAudio(g)
+
+    // ---- 自检钩子（与超级玛丽同款：环境变量驱动，不碰用户鼠标）----
+    //   PVZAUTO=1 [PVZLEVEL=n]      跳过菜单/选卡，直接开局（自动选 10 张卡）
+    //   PVZLG=1 [PVZLEVEL=n]        自动开局为小游戏 n（1..6）
+    //   PVZAUTOPLANT=1              自动布阵（每行 向日葵×2 + 豌豆×2 + 坚果，阳光拉满）
+    //   PVZFIRSTWAVE=<帧>           压缩首波等待（默认 1080）
+    //   PVZSHOT=<png> PVZSHOT_AT=<帧>  到指定帧从渲染器读像素存图并自动退出
+    var eAuto = _env("PVZAUTO")
+    if eAuto != null {
+        int lv0 = 1
+        var eLv = _env("PVZLEVEL")
+        if eLv != null { lv0 = _int(_str(eLv)) }
+        var eLg = _env("PVZLG")
+        int md = MODE_ADV
+        if eLg != null { md = MODE_LG }
+        initLevel(g, md, lv0)
+        if md == MODE_ADV {
+            g.chosen = []
+            var nPick = 0
+            for 0 : PLANT_N - 1 to i {
+                if nPick >= 10 { break }
+                if cardNotRecommend(g, i) == 1 { continue }
+                g.chosen.add(i)
+                nPick = nPick + 1
+            }
+            for 0 : 9 to i {
+                if nPick >= 10 { break }
+                var has = false
+                for g.chosen to t { if t == i { has = true } }
+                if not has { g.chosen.add(i); nPick = nPick + 1 }
+            }
+        }
+        startPlay(g)
+        var eAp = _env("PVZAUTOPLANT")
+        if eAp != null and md == MODE_ADV {
+            g.sun = 9990
+            for 0 : g.rows - 1 to r {
+                autoPlace(g, r, 0, P_SUNFLOWER)
+                autoPlace(g, r, 1, P_SUNFLOWER)
+                autoPlace(g, r, 2, P_PEASHOOTER)
+                autoPlace(g, r, 3, P_PEASHOOTER)
+                autoPlace(g, r, 6, P_WALLNUT)
+            }
+            print("[自检] 自动布阵完成 plants=" + g.plants.len())
+        }
+        print("[自检] 自动开局 mode=" + md + " level=" + lv0 + " cards=" + g.chosen.len())
+    }
+
+    string shotPath = ""
+    int shotAt = 600
+    var eShot = _env("PVZSHOT")
+    if eShot != null { shotPath = _str(eShot) }
+    var eAt = _env("PVZSHOT_AT")
+    if eAt != null { shotAt = _int(_str(eAt)) }
+    if shotPath != "" {
+        int shotFrame = 0
+        win.setOverlay(func(Renderer r) {
+            shotFrame = shotFrame + 1
+            if shotFrame >= shotAt {
+                var s = r.readPixelsAt(0, 0, 800, 600)
+                bool ok = false
+                if s != null { ok = SDL3.saveImagePNG(s, shotPath) }
+                print("[shot] " + shotPath + " ok=" + _str(ok) + " frame=" + _str(shotFrame) + "\n")
+                SDL3.requestExit()
+            }
+        })
+    }
+
+    win.setMaxFPS(60)
+    print("[OK] 植物大战僵尸启动")
+
+    win.run(
+        func(Event ev): bool {
+            return handleEvent(g, ev)
+        },
+        func(Renderer r) {
+            SDL3.markFrameRedraw()
+            if not g.uiOk {
+                loadUI(g, r)
+                g.ren = r.handle
+            }
+            // 渐进加载全部动画组（加载期间不更新游戏）
+            if g.loadIdx < ANIM_N {
+                g.loadIdx = loadAnimStep(g, r, g.loadIdx, 8)
+                drawLoading(g, r)
+                return
+            }
+            if g.state == LOADING { g.state = ST_MENU }
+            // 自检钩子会在首帧前 initLevel（那时 texBgs 还没加载）⇒ 加载完成后补设一次背景
+            setLevelBg(g)
+            if g.state == ST_PLAY and g.sub == 1 {
+                updateGame(g)
+            } else {
+                g.frame = g.frame + 1
+            }
+            renderGame(g, r)
+        }
+    )
+
+    if g.audioOk {
+        g.bgm.stop()
+        g.bgm.uninit()
+        audio.uninit()
+    }
+    if font.ok { font.close() }
+    if fontBig.ok { fontBig.close() }
+    win.destroy()
+    SDL3.quit()
+    print("退出游戏")
+}
+
+
+
+
+
+
+

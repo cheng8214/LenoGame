@@ -1,0 +1,545 @@
+// pvz2_types.leno — 植物大战僵尸完整版 数据结构与数据表
+//
+// 仿写自 pypvz（Python 版植物大战僵尸，github.com/wszqkzqk/pypvz）：
+//   数值/机制对齐 source/constants.py、component/plant.py、component/zombie.py、
+//   state/level.py；资源用原版逐帧 PNG（image/ 下 Plants|Zombies|Bullets|Cards|Screen）。
+//
+// 时间单位：本游戏 60fps，所有计时常量一律用「帧」（60 帧 = 1 秒）。
+// 坐标：植物锚点 = 格子中心 x、格子底部 y；僵尸锚点 = 身体左边缘 x、脚底 y。
+
+import "SDL3" as SDL3
+import "Music" as audio
+use SDL3.Font
+use audio.(Sound, Sfx)
+
+// ==================== 植物类型（卡片顺序，与 Python PLANT_CARD_INFO 一致）====================
+
+export var P_PEASHOOTER  = 0
+export var P_SUNFLOWER   = 1
+export var P_CHERRY      = 2
+export var P_WALLNUT     = 3
+export var P_POTATOMINE  = 4
+export var P_SNOWPEA     = 5
+export var P_CHOMPER     = 6
+export var P_REPEATER    = 7
+export var P_PUFFSHROOM  = 8
+export var P_SUNSHROOM   = 9
+export var P_FUMESHROOM  = 10
+export var P_GRAVEBUSTER = 11
+export var P_HYPNOSHROOM = 12
+export var P_SCAREDY     = 13
+export var P_ICESHROOM   = 14
+export var P_DOOMSHROOM  = 15
+export var P_LILYPAD     = 16
+export var P_SQUASH      = 17
+export var P_TANGLEKLEP  = 18
+export var P_THREEPEATER = 19
+export var P_JALAPENO    = 20
+export var P_SPIKEWEED   = 21
+export var P_TORCHWOOD   = 22
+export var P_TALLNUT     = 23
+export var P_SEASHROOM   = 24
+export var P_STARFRUIT   = 25
+export var P_PUMPKIN     = 26
+export var P_COFFEEBEAN  = 27
+export var P_GARLIC      = 28
+export var PLANT_N       = 29
+
+export var PLANT_NAME = [
+    "豌豆射手", "向日葵", "樱桃炸弹", "坚果墙", "土豆雷",
+    "寒冰射手", "大嘴花", "双发射手", "小喷菇", "阳光菇",
+    "大喷菇", "墓碑吞噬者", "魅惑菇", "胆小菇", "寒冰菇",
+    "毁灭菇", "睡莲", "窝瓜", "缠绕水草", "三线射手",
+    "火爆辣椒", "地刺", "火炬树桩", "高坚果", "海蘑菇",
+    "杨桃", "南瓜头", "咖啡豆", "大蒜"
+]
+export var PLANT_CARD = [
+    "card_peashooter", "card_sunflower", "card_cherrybomb", "card_wallnut", "card_potatomine",
+    "card_snowpea", "card_chomper", "card_repeaterpea", "card_puffshroom", "card_sunshroom",
+    "card_fumeshroom", "card_gravebuster", "card_hypnoshroom", "card_scaredyshroom", "card_iceshroom",
+    "card_doomshroom", "card_lilypad", "card_squash", "card_tangleklep", "card_threepeashooter",
+    "card_jalapeno", "card_spikeweed", "card_torchwood", "card_tallnut", "card_seashroom",
+    "card_starfruit", "card_pumpkinhead", "card_coffeebean", "card_garlic"
+]
+export var PLANT_COST = [
+    100, 50, 150, 50, 25,
+    175, 150, 200, 0, 25,
+    75, 75, 75, 25, 75,
+    125, 25, 50, 25, 325,
+    125, 100, 175, 125, 0,
+    125, 125, 75, 50
+]
+export var PLANT_CD = [   // 冷却（帧）：7500ms=450、30000ms=1800、50000ms=3000
+    450, 450, 3000, 1800, 1800,
+    450, 450, 450, 450, 450,
+    450, 450, 1800, 450, 3000,
+    3000, 450, 1800, 1800, 450,
+    3000, 450, 450, 1800, 1800,
+    450, 1800, 450, 450
+]
+export var PLANT_HP = [
+    300.0, 300.0, 300.0, 4000.0, 300.0,
+    300.0, 300.0, 300.0, 300.0, 300.0,
+    300.0, 300.0, 300.0, 300.0, 300.0,
+    300.0, 300.0, 300.0, 300.0, 300.0,
+    300.0, 300.0, 300.0, 8000.0, 300.0,
+    300.0, 4000.0, 300.0, 450.0
+]
+// 植物能力标记（位掩码）
+export var PF_SHOOTER   = 1     // 直线射手（同行有僵尸才射）
+export var PF_SUN       = 2     // 产阳光
+export var PF_ASH       = 4     // 灰烬类（生效时不可被啃）
+export var PF_SLEEP     = 8     // 白天会睡觉的蘑菇
+export var PF_WATER     = 16    // 水生植物（可种水面）
+export var PF_GROUND    = 32    // 贴地植物（地刺类，不可被啃）
+export var PF_WALL      = 64    // 肉盾（被啃时若有 Garlic 则驱赶换行）
+export var PF_UNDER     = 128   // 南瓜头（同格优先被啃）
+
+export var PLANT_FLAG = [
+    1, 2, 4, 64, 4,
+    1, 4, 1, 8|1, 8|2,
+    8|1, 4, 8, 8|1, 8|4,
+    8|4, 16, 4, 16|4, 1,
+    4, 32, 1, 64, 8|16|1,
+    1, 128, 0, 64
+]
+
+// 睡觉蘑菇集合（白天场种下即睡）
+export func isSleepPlant(int t): bool {
+    if t == P_PUFFSHROOM or t == P_SUNSHROOM or t == P_FUMESHROOM { return true }
+    if t == P_HYPNOSHROOM or t == P_SCAREDY or t == P_ICESHROOM { return true }
+    if t == P_DOOMSHROOM or t == P_SEASHROOM { return true }
+    return false
+}
+export func isWaterPlant(int t): bool {
+    if t == P_LILYPAD or t == P_SEASHROOM or t == P_TANGLEKLEP { return true }
+    return false
+}
+
+// ==================== 僵尸类型 ====================
+
+export var Z_NORMAL      = 0
+export var Z_FLAG        = 1
+export var Z_CONE        = 2
+export var Z_BUCKET      = 3
+export var Z_NEWSPAPER   = 4
+export var Z_FOOTBALL    = 5
+export var Z_POLE        = 6
+export var Z_SNORKEL     = 7
+export var Z_DUCKY       = 8
+export var Z_DUCKY_CONE  = 9
+export var Z_DUCKY_BUCKET= 10
+export var Z_ZOMBONI     = 11
+export var Z_DOOR        = 12
+export var ZOMBIE_N      = 13
+
+export var Z_NAME = [
+    "普通僵尸", "旗帜僵尸", "路障僵尸", "铁桶僵尸", "读报僵尸",
+    "橄榄球僵尸", "撑杆跳僵尸", "潜水僵尸", "鸭子救生圈僵尸", "路障鸭子僵尸",
+    "铁桶鸭子僵尸", "冰车僵尸", "铁门僵尸"
+]
+// 本体血量（含掉头阈值 70）
+export var Z_BODY = [270.0, 270.0, 270.0, 270.0, 270.0, 270.0, 500.0, 270.0, 270.0, 270.0, 270.0, 1350.0, 270.0]
+// 一类防具（路障/铁桶/橄榄球盔）
+export var Z_HAT1 = [0, 0, 370, 1100, 0, 1400, 0, 0, 0, 370, 1100, 0, 0]
+// 二类防具（报纸/铁门）
+export var Z_HAT2 = [0, 0, 0, 0, 150, 0, 0, 0, 0, 0, 0, 0, 1100]
+// 基础速度比（1 = 16.7 px/s）
+export var Z_SPEED = [1.0, 1.25, 1.0, 1.0, 1.0, 1.88, 1.88, 1.6, 1.0, 1.0, 1.0, 1.0, 1.0]
+// 身体宽度（帧裁剪宽，碰撞/绘制用）
+export var Z_WIDTH = [90.0, 110.0, 80.0, 90.0, 92.0, 154.0, 201.0, 143.0, 105.0, 105.0, 105.0, 178.0, 100.0]
+// 波次权重与等级消耗（CREATE_ZOMBIE_DICT）
+export var Z_COST   = [1, 1, 2, 4, 2, 7, 2, 3, 1, 2, 4, 7, 4]
+export var Z_WEIGHT = [4000, 0, 4000, 3000, 1000, 2000, 2000, 2000, 0, 0, 0, 2000, 3500]
+// 特性
+export var ZF_SWIM      = 1    // 会游泳（鸭子）
+export var ZF_ICE_IMMUNE= 2    // 免疫冰冻减速（冰车）
+export var ZF_WATER     = 4    // 水生僵尸（只走水路）
+export var ZF_POLE      = 8    // 撑杆跳
+export var ZF_SNORKEL   = 16   // 潜水
+export var ZF_ZOMBONI   = 32   // 冰车（碾植物、造冰道）
+export var ZF_NEWSPAPER = 64   // 读报（报纸破暴走）
+
+export var Z_FLAGS = [
+    0, 0, 0, 0, ZF_NEWSPAPER,
+    0, ZF_POLE, ZF_SNORKEL, ZF_SWIM, ZF_SWIM,
+    ZF_SWIM, ZF_ZOMBONI|ZF_ICE_IMMUNE, 0
+]
+
+// ==================== 实体结构 ====================
+
+// 逐帧动画（一个动作）
+export struct FrameAnim {
+    Array[Ptr[u8]] tex
+    Array[float] fw          // 每帧裁剪后宽
+    Array[float] fh          // 每帧裁剪后高
+    int n = 0
+    int interval = 4         // 帧间隔（帧）
+}
+
+// 植物状态
+export var ST_IDLE   = 0
+export var ST_ATK    = 1
+export var ST_SLEEP  = 2
+export var ST_WORK   = 3            // 灰烬/爆炸生效中
+export var ST_DIGEST = 4            // 大嘴花消化
+export var ST_INIT   = 5            // 土豆雷出土
+
+export struct Plant {
+    int ptype = 0
+    int row = 0
+    int col = 0
+    float x = 0               // 锚点：格子中心 x
+    float y = 0               // 锚点：格子底部 y
+    float hp = 0
+    float maxHp = 0
+    int state = 0
+    int timer = 0             // 主计时（射击间隔/产阳光/引信）
+    int sub = 0               // 子计时
+    int anim = 0              // 动画组 id
+    float aframe = 0
+    bool alive = false
+    int hitFlash = 0          // 受击闪白
+    bool big = false          // 阳光菇长大
+    bool armed = false        // 土豆雷就绪
+    bool garlicBite = false   // 大蒜已被啃一口（驱赶用）
+    float vx = 0              // 保龄球坚果滚动速度
+}
+
+// 僵尸状态
+export var ZS_WALK   = 0
+export var ZS_ATK    = 1
+export var ZS_DIE    = 2
+export var ZS_FREEZE = 3
+
+export struct Zombie {
+    int ztype = 0
+    int row = 0
+    float x = 0               // 锚点：身体左边缘 x
+    float y = 0               // 锚点：脚底 y
+    float hp = 0
+    float maxHp = 0
+    int hat1 = 0              // 一类防具
+    int hat1Max = 0
+    int hat2 = 0              // 二类防具
+    int hat2Max = 0
+    int state = 0
+    float speed = 0
+    float width = 0           // 身体宽
+    int anim = 0
+    float aframe = 0
+    int animInt = 11          // 动画帧间隔（walk 180ms≈11 帧）
+    bool alive = false
+    bool losthead = false
+    int slowT = 0             // 寒冰减速剩余帧
+    int freezeT = 0           // 冻结剩余帧
+    int oldState = 0
+    float moveAcc = 0         // 行走累加器
+    int eatT = 0              // 啃食计时
+    int dieT = 0
+    int hitFlash = 0
+    bool hypno = false        // 魅惑状态
+    float yOff = 0            // 大蒜换行的垂直偏移
+    bool inWater = false      // 游泳中
+    bool jumped = false       // 撑杆跳已跳过
+    bool jumpFail = false     // 跳过高坚果失败
+    bool paperGone = false    // 报纸已破
+    int target = -1           // 啃食目标（plants 下标）
+    bool ashDie = false       // 被灰烬炸死（播 BoomDie）
+    int flagHp = 0            // 旗帜僵尸举旗（无用，保留）
+    int rowTo = -1            // 大蒜换行目标行（-1=无）
+    bool jumping = false      // 撑杆跳起跳中
+    int jumpT = 0             // 起跳计时
+    bool diving = false       // 潜水中
+    int transT = 0            // 过渡动画剩余帧（>0 时播 transAnim）
+    int transAnim = 0         // 过渡动画组 id
+}
+
+export struct Bullet {
+    int kind = 0              // 0=豌豆 1=冰豌豆 2=火球 3=蘑菇孢子 4=海蘑菇孢子 5=杨桃星
+    float x = 0
+    float y = 0
+    float vx = 0
+    float vy = 0
+    float ty = 0              // 目标 y（杨桃弹趋近）
+    int row = 0
+    float dmg = 20.0
+    int dmgType = 0           // 0=default 1=common 2=range 3=ash
+    int effect = 0            // 0=无 1=冰 2=解冻
+    bool alive = false
+    bool fired = false        // 火球已溅射
+    bool converted = false    // 已被火炬树桩转化
+    float aframe = 0
+}
+
+export struct Sun {
+    float x = 0
+    float y = 0
+    float ty = 0
+    float value = 25.0
+    bool falling = false
+    bool collecting = false
+    float tx = 0
+    float ty2 = 0
+    int life = 0
+    bool alive = false
+    float aframe = 0
+}
+
+export struct Mower {
+    int row = 0
+    float x = 0
+    float y = 0
+    bool active = false
+    bool alive = false
+    float aframe = 0
+}
+
+export struct Particle {
+    float x = 0
+    float y = 0
+    float vx = 0
+    float vy = 0
+    float size = 0
+    int life = 0
+    int maxLife = 0
+    int c = 0
+}
+
+export struct FloatText {
+    float x = 0
+    float y = 0
+    string text = ""
+    int c = 0
+    int life = 0
+    int maxLife = 0
+}
+
+export struct Grave {
+    int row = 0
+    int col = 0
+    float x = 0
+    float y = 0
+    float hp = 0
+    bool alive = false
+    float aframe = 0
+}
+
+export struct Hole {
+    int row = 0
+    int col = 0
+    float x = 0
+    float y = 0
+    int life = 0              // 剩余帧（0=已消失）
+    bool shallow = false
+}
+
+export struct IceTile {
+    int row = 0
+    int col = 0
+    float x = 0
+    float y = 0
+    bool alive = false
+}
+
+// ==================== 游戏状态 ====================
+
+export var ST_MENU   = 0            // 主菜单
+export var ST_LEVELS = 1            // 关卡选择
+export var ST_LGSEL  = 9            // 小游戏选择
+export var ST_CHOOSE = 2            // 选卡
+export var ST_PLAY   = 3            // 战斗
+export var ST_PAUSE  = 4            // 暂停
+export var ST_WIN    = 5            // 通关
+export var ST_LOSE   = 6            // 失败
+export var ST_AWARD  = 7            // 奖杯结算
+export var ST_HELP   = 8            // 帮助
+
+export var MODE_ADV  = 0            // 冒险
+export var MODE_LG   = 1            // 小游戏
+
+export var BG_DAY    = 0
+export var BG_NIGHT  = 1
+export var BG_POOL   = 2
+export var BG_FOG    = 3
+export var BG_SINGLE = 7
+export var BG_TRIPLE = 8
+
+// 选卡栏类型
+export var BAR_STATIC  = 0
+export var BAR_MOVE    = 1
+export var BAR_BOWLING = 2
+
+export struct Game {
+    int state = 0            // ST_MENU
+    int mode = 0             // MODE_ADV
+    int level = 1             // 当前冒险关（1..13）
+    int lg = 1                // 当前小游戏关
+    int frame = 0
+    bool quitReq = false
+
+    // 存档进度
+    int levelNum = 1         // 冒险进度（已解锁到第几关）
+    int lgNum = 1            // 小游戏进度
+    int advComplete = 0      // 冒险模式完成轮数
+    int lgComplete = 0       // 小游戏完成轮数
+
+    // 本关配置
+    int bgType = 0            // BG_DAY
+    int rows = 5
+    int cellW = 80
+    int cellH = 100
+    float mapOX = 35.0
+    float mapOY = 100.0
+    int numFlags = 1
+    int initSun = 50
+    bool hasShovel = true
+    bool isNight = false
+    bool isPool = false
+    int graveGrade = 0
+    Array[int] zAllowed       // 本关可用僵尸类型
+    Array[int] zWeight        // 对应权重
+    Array[int] inevWave       // 必出僵尸波次
+    Array[int] inevType
+    int barType = 0           // BAR_STATIC
+    Array[int] rowWalk        // 每行是否刷僵尸
+    Array[int] rowPlant       // 每行是否可种植
+
+    // 波次（initLevel 预生成）
+    Array[Array[int]] waves
+    int wave = 0
+    int waveTimer = 0
+    int waveState = 0         // 0=等待下一波 1=出怪中 2=清怪中
+    int spawnIdx = 0
+    int spawnGap = 0
+    int killed = 0
+    int skyTimer = 0
+    int fallenSun = 0
+    bool produceSun = true
+    int bannerT = 0
+    string banner = ""
+    int endTimer = 0          // 最后一波后计时
+    bool graveGrown = false
+    bool poolSpawned = false
+    int clearT = 0            // 清波计时（提前刷下一波）
+
+    // 玩法
+    int sub = 0               // 0=选卡 1=战斗中
+    int sun = 0
+    Array[int] chosen         // 已选卡片
+    Array[int] cardCd
+    int selCard = -1
+    bool shovelMode = false
+    Array[int] belt           // 传送带
+    int beltTimer = 0
+    float mx = 0.0
+    float my = 0.0
+    bool showMenu = false     // 暂停大菜单
+
+    // 实体
+    Array[Plant] plants
+    Array[Zombie] zombies
+    Array[Bullet] bullets
+    Array[Sun] suns
+    Array[Mower] mowers
+    Array[Particle] parts
+    Array[FloatText] floats
+    Array[Grave] graves
+    Array[Hole] holes
+    Array[IceTile] ices
+
+    // 动画缓存
+    Array[FrameAnim] anims
+    Array[bool] animOk
+    int loadIdx = 0           // 渐进加载进度
+    bool uiOk = false
+
+    // 纹理
+    Ptr[u8] ren            // 渲染器句柄（后台换图用）
+    Array[Ptr[u8]] texBgs  // 四张场地背景缓存（0昼 1夜 2池 3雾）
+    Ptr[u8] texBg
+    Ptr[u8] texMenuBg
+    Ptr[u8] texChooserBg
+    Ptr[u8] texPanelBg
+    Ptr[u8] texStartBtn
+    Ptr[u8] texShovelBox
+    Ptr[u8] texShovel
+    Ptr[u8] texCar
+    Ptr[u8] texProgressBar
+    Ptr[u8] texProgressFlag
+    Ptr[u8] texProgressHead
+    Ptr[u8] texApproching
+    Ptr[u8] texLittleMenu
+    Ptr[u8] texBigMenu
+    Ptr[u8] texRestartBtn
+    Ptr[u8] texMainMenuBtn
+    Ptr[u8] texVolBtn
+    Ptr[u8] texUnivBtn
+    Ptr[u8] texAdventure0
+    Ptr[u8] texAdventure1
+    Ptr[u8] texLittle0
+    Ptr[u8] texLittle1
+    Ptr[u8] texOptionBtn
+    Ptr[u8] texHelpBtn
+    Ptr[u8] texExitBtn
+    Ptr[u8] texTrophySilver
+    Ptr[u8] texTrophyGold
+    Ptr[u8] texVictory
+    Ptr[u8] texLose
+    Ptr[u8] texHelpImg
+    Ptr[u8] texMoveBg
+    Array[Ptr[u8]] texCards    // 卡片图（按植物类型）
+    Array[Ptr[u8]] texBelt     // 传送带卡片缓存（按植物类型）
+
+    // 音频
+    bool audioOk = false
+    bool muted = false
+    float volume = 0.5
+    Sound bgm
+    Sfx sfxPlant
+    Sfx sfxShoot
+    Sfx sfxSplat
+    Sfx sfxCherry
+    Sfx sfxShovel
+    Sfx sfxCoin
+    Sfx sfxGroan
+    Sfx sfxPop
+    Sfx sfxAwooga
+    Sfx sfxMower
+    Sfx sfxChomp
+    Sfx sfxBuzzer
+    Sfx sfxFreeze
+    Sfx sfxFire
+    Sfx sfxTap
+    Sfx sfxClick
+    Sfx sfxWin
+    Sfx sfxLose
+    Sfx sfxHuge
+    Sfx sfxPotato
+    Sfx sfxSquash
+    Sfx sfxFume
+    Sfx sfxHypno
+    Sfx sfxZomboni
+    Sfx sfxWater
+    Sfx sfxNewspaper
+    Sfx sfxBoom
+
+    Font font
+    Font fontBig
+    bool fontOk = false
+}
+
+// ==================== 关卡数据（冒险模式 13 关，对齐 Python LEVEL_MAP_DATA）====================
+
+// 每关：bgType, numFlags, initSun, graveGrade, barType, hasShovel
+export var LV_BG    = [BG_SINGLE, BG_TRIPLE, BG_DAY, BG_DAY, BG_DAY, BG_NIGHT, BG_NIGHT, BG_NIGHT, BG_POOL, BG_POOL, BG_POOL, BG_POOL, BG_FOG]
+export var LV_FLAGS = [1, 1, 2, 2, 3, 2, 2, 3, 2, 3, 3, 4, 4]
+export var LV_SUN   = [150, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50]
+export var LV_GRAVE = [0, 0, 0, 0, 0, 1, 2, 3, 0, 0, 0, 0, 0]
+export var LV_TITLE = [
+    "白天 1-1", "白天 1-2", "白天 1-3", "白天 1-4", "白天 1-5",
+    "黑夜 2-1", "黑夜 2-2", "黑夜 2-3",
+    "泳池 3-1", "泳池 3-2", "泳池 3-3", "泳池 3-4",
+    "浓雾 4-1"
+]
+export var LV_COUNT = 13
