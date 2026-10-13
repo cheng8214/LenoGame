@@ -215,7 +215,7 @@ struct AnimEditor {
 
     // 右侧面板用：两个按钮排成一行（按钮宽度固定，靠面板宽度保证不被压缩）
     func row2(Button a, Button b): HBox {
-        var hb = SDL3.createHBox({padX: 0, padY: 2, spacing: 4})
+        var hb = SDL3.createHBox({pad_x: 0, pad_y: 2, spacing: 4})
         hb.add(a, {grow: 0})
         hb.add(b, {grow: 0})
         return hb
@@ -1708,24 +1708,24 @@ struct AnimEditor {
         // ===== 中间下半：左 = 部件列表，右 = 部件/变换按钮（三行，行宽 ≤300）=====
         // 注意：Splitter 的 min_first + min_second 必须小于分割区最小宽度，
         // 否则 ratio 被 clamp 成负值、布局崩坏（按钮叠到左上角、列表区消失）
-        var layerBar = SDL3.createHBox({padX: 4, padY: 3, spacing: 4})
+        var layerBar = SDL3.createHBox({pad_x: 4, pad_y: 3, spacing: 4})
         layerBar.add(btnDelLayer, {grow: 0})
         layerBar.add(btnLeft,     {grow: 0})
         layerBar.add(btnUp,       {grow: 0})
         layerBar.add(btnDown,     {grow: 0})
 
-        var layerBar2 = SDL3.createHBox({padX: 4, padY: 3, spacing: 4})
+        var layerBar2 = SDL3.createHBox({pad_x: 4, pad_y: 3, spacing: 4})
         layerBar2.add(btnRight,   {grow: 0})
         layerBar2.add(btnFlipH,   {grow: 0})
         layerBar2.add(btnFlipV,   {grow: 0})
 
-        var layerBar3 = SDL3.createHBox({padX: 4, padY: 3, spacing: 4})
+        var layerBar3 = SDL3.createHBox({pad_x: 4, pad_y: 3, spacing: 4})
         layerBar3.add(btnScaleUp,   {grow: 0})
         layerBar3.add(btnScaleDown, {grow: 0})
         layerBar3.add(btnRotCW,     {grow: 0})
         layerBar3.add(btnRotCCW,    {grow: 0})
 
-        var layerBtnCol = SDL3.createVBox({padX: 2, padY: 2, spacing: 2})
+        var layerBtnCol = SDL3.createVBox({pad_x: 2, pad_y: 2, spacing: 2})
         layerBtnCol.add(layerBar,  {grow: 0})
         layerBtnCol.add(layerBar2, {grow: 0})
         layerBtnCol.add(layerBar3, {grow: 0})
@@ -1748,7 +1748,7 @@ struct AnimEditor {
         var grpView  = SDL3.createLabel({text: "— 视图 / 播放 —", font_size: 13})
         var grpAlign = SDL3.createLabel({text: "— 对齐（≥2 个选中）—", font_size: 13})
 
-        var sidePanel = SDL3.createVBox({padX: 4, padY: 4, spacing: 3})
+        var sidePanel = SDL3.createVBox({pad_x: 4, pad_y: 4, spacing: 3})
         sidePanel.add(lblImg,   {grow: 0})
         sidePanel.add(lblPos,   {grow: 0})
         sidePanel.add(lblRot,   {grow: 0})
@@ -1797,7 +1797,7 @@ struct AnimEditor {
         mainSplit.set_first(fileList)
         mainSplit.set_second(innerHSplit)
 
-        var root = SDL3.createVBox({padX: 1, padY: 1, spacing: 0})
+        var root = SDL3.createVBox({pad_x: 1, pad_y: 1, spacing: 0})
         root.add(statusLbl, {grow: 0, shrink: 0, basis: 26, align: 3})
         root.add(mainSplit, {grow: 1, shrink: 1, align: 3})
         win.setRootAt(root, 0, titleH)
