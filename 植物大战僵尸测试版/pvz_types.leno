@@ -14,7 +14,7 @@ use audio.(Sound, Sfx)
 
 // 一个动作（如 僵尸走路 / 豌豆射手射击）
 // 逐帧数据按 part 主序存放：下标 = part * nFrame + frame
-export struct Anim {
+export struct PvzAnim {
     int fps = 0
     int nFrame = 0
     int nPart = 0
@@ -177,17 +177,17 @@ export struct Game {
     float bucketOy = 0
 
     // 动画
-    Anim anSunflower
-    Anim anPeashooter
-    Anim anPeaShoot
-    Anim anWallnut
-    Anim anSnowPea
-    Anim anSnowShoot
-    Anim anCherry
-    Anim anSun
-    Anim anZWalk
-    Anim anZEat
-    Anim anZDeath
+    PvzAnim anSunflower
+    PvzAnim anPeashooter
+    PvzAnim anPeaShoot
+    PvzAnim anWallnut
+    PvzAnim anSnowPea
+    PvzAnim anSnowShoot
+    PvzAnim anCherry
+    PvzAnim anSun
+    PvzAnim anZWalk
+    PvzAnim anZEat
+    PvzAnim anZDeath
 
     bool loaded = 0
 

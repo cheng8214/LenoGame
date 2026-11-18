@@ -52,7 +52,7 @@ struct Part {
 }
 
 // 一个动画（一个 .txt 文件）
-struct Anim {
+struct EditorAnim {
     string         name = 0
     int            fps = 0
     int            nFrame = 0
@@ -120,7 +120,7 @@ struct AnimEditor {
     Button   btnAlignCV
 
     // ===== 状态 =====
-    Array[Anim]   anims    = []
+    Array[EditorAnim]   anims    = []
     int           curAnim  = -1
     int           curFrame = 0
     int           selPart  = -1
@@ -239,12 +239,12 @@ struct AnimEditor {
 
     // ==================== 加载 / 保存 ====================
 
-    // 把 anim 文本解析为 Anim（loadAnimFile 与撤销回放共用）
-    func parseAnim(string content, string name): Anim {
+    // 把 anim 文本解析为 EditorAnim（loadAnimFile 与撤销回放共用）
+    func parseAnim(string content, string name): EditorAnim {
         // ★ 同 pvz_art.loadAnim：files.read 不再翻译行尾，CRLF 的 \r 必须先剥掉，
         //   否则 `_int("12\r")` 抛"无法将字符串转换为整数"（打开动画直接报错）
         Array[string] lines = content.lines()
-        Anim a = new Anim()
+        EditorAnim a = new EditorAnim()
         a.name = name
         if lines.len() < 2 { return a }
         Array[string] fp = lines[0].split("=")
@@ -283,8 +283,8 @@ struct AnimEditor {
         return a
     }
 
-    // 把 Anim 序列化为 anim/*.txt 文本（saveCurAnim 与撤销快照共用）
-    func serializeAnim(Anim a): string {
+    // 把 EditorAnim 序列化为 anim/*.txt 文本（saveCurAnim 与撤销快照共用）
+    func serializeAnim(EditorAnim a): string {
         Array[string] lines = []
         lines.add($"fps={a.fps}")
         lines.add($"nFrame={a.nFrame}")
@@ -328,7 +328,7 @@ struct AnimEditor {
         _redo.add(serializeAnim(anims[curAnim]))
         if _redo.len() > 60 { _redo.remove(0) }
         string content = _str(_undo.remove(_undo.len() - 1))
-        Anim a = parseAnim(content, anims[curAnim].name)
+        EditorAnim a = parseAnim(content, anims[curAnim].name)
         anims[curAnim] = a
         selPart = -1
         selParts = []
@@ -346,7 +346,7 @@ struct AnimEditor {
         _undo.add(serializeAnim(anims[curAnim]))
         if _undo.len() > 60 { _undo.remove(0) }
         string content = _str(_redo.remove(_redo.len() - 1))
-        Anim a = parseAnim(content, anims[curAnim].name)
+        EditorAnim a = parseAnim(content, anims[curAnim].name)
         anims[curAnim] = a
         selPart = -1
         selParts = []
@@ -363,7 +363,7 @@ struct AnimEditor {
         if src == "" { return false }
         Array[string] ps = path.split("/")
         string name = ps[ps.len() - 1]
-        Anim a = parseAnim(src, name)
+        EditorAnim a = parseAnim(src, name)
         anims = [a]
         curAnim = 0
         curFrame = 0
@@ -383,7 +383,7 @@ struct AnimEditor {
 
     func saveCurAnim() {
         if curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         string content = serializeAnim(a)
         string path = animDir + a.name
         files.write(path, content)
@@ -401,7 +401,7 @@ struct AnimEditor {
             Array[string] ps = pth.split("/")
             string nm = ps[ps.len() - 1]
             if nm.len() < 4 or nm.slice(nm.len() - 4, nm.len()) != ".txt" { nm = nm + ".txt" }
-            Anim aa = anims[curAnim]
+            EditorAnim aa = anims[curAnim]
             aa.name = nm
             anims[curAnim] = aa
             files.write(pth, serializeAnim(aa))
@@ -414,7 +414,7 @@ struct AnimEditor {
     }
 
     func newAnim() {
-        Anim a = new Anim()
+        EditorAnim a = new EditorAnim()
         a.name = "untitled.txt"
         a.fps = 12
         a.nFrame = 1
@@ -439,7 +439,7 @@ struct AnimEditor {
     func addFrame() {
         if curAnim < 0 or curAnim >= anims.len() { return }
         pushUndo()
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         int at = curFrame + 1
         if at > a.nFrame { at = a.nFrame }
         a.nFrame = a.nFrame + 1
@@ -467,7 +467,7 @@ struct AnimEditor {
     func delFrame() {
         if curAnim < 0 or curAnim >= anims.len() { return }
         pushUndo()
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if a.nFrame <= 1 { return }
         int at = curFrame
         if a.parts.len() > 0 {
@@ -505,7 +505,7 @@ struct AnimEditor {
 
     func moveSel(float dx, float dy) {
         if curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if curFrame >= a.nFrame { return }
         Array[int] idxs = targets()
         for 0 : idxs.len() - 1 to k {
@@ -526,7 +526,7 @@ struct AnimEditor {
 
     func adjSel(string which, float amt) {
         if curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if curFrame >= a.nFrame { return }
         Array[int] idxs = targets()
         for 0 : idxs.len() - 1 to k {
@@ -551,7 +551,7 @@ struct AnimEditor {
     // 翻转选中部件：用 psx/psy 的符号表示（负 = 翻转）
     func flipSel(string axis) {
         if curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if curFrame >= a.nFrame { return }
         Array[int] idxs = targets()
         for 0 : idxs.len() - 1 to k {
@@ -572,7 +572,7 @@ struct AnimEditor {
     // 全选当前动画的所有部件
     func selectAllParts() {
         if curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         selParts = []
         for 0 : a.parts.len() - 1 to i { selParts.add(i) }
         selPart = if selParts.len() > 0 then selParts[0] else -1
@@ -585,7 +585,7 @@ struct AnimEditor {
     // 切换选中部件在当前帧的可见性（隐藏 = 该帧输出 "h"，变换值保留可随时恢复）
     func toggleSelVis() {
         if curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if curFrame >= a.nFrame { return }
         Array[int] idxs = targets()
         if idxs.len() == 0 { return }
@@ -608,7 +608,7 @@ struct AnimEditor {
     // 复制当前帧（所有部件的 x/y/角度/缩放/可见），可粘贴到任意帧
     func copyFrame() {
         if curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if curFrame >= a.nFrame { return }
         _clipX = []; clipY = []; clipA = []; clipSx = []; clipSy = []; clipVis = []
         for 0 : a.parts.len() - 1 to i {
@@ -627,7 +627,7 @@ struct AnimEditor {
     func pasteFrame() {
         if curAnim < 0 or curAnim >= anims.len() { return }
         if not clipValid { statusLbl.set_text("剪贴板中没有帧数据（先点「复制帧」）"); return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if curFrame >= a.nFrame { return }
         if _clipX.len() != a.parts.len() {
             statusLbl.set_text($"帧剪贴板部件数({_clipX.len()})与当前动画({a.parts.len()})不一致，无法粘贴")
@@ -656,7 +656,7 @@ struct AnimEditor {
     // 对齐选中部件（mode: l/r/t/b/ch/cv）—— 基于当前帧各部件的绘制框（尺寸取上次绘制缓存）
     func alignSel(string mode) {
         if curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if curFrame >= a.nFrame { return }
         Array[int] idxs = targets()
         if idxs.len() < 2 { statusLbl.set_text("对齐需要至少选中 2 个部件"); return }
@@ -700,7 +700,7 @@ struct AnimEditor {
     func fpsAdj(int d) {
         if curAnim < 0 or curAnim >= anims.len() { return }
         pushUndo()
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         a.fps = a.fps + d
         if a.fps < 1 { a.fps = 1 }
         if a.fps > 60 { a.fps = 60 }
@@ -713,7 +713,7 @@ struct AnimEditor {
     // 批量删除选中部件（多选时一次性删除，索引从大到小删避免错位）
     func delSelParts() {
         if curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         Array[int] idxs = targets()
         if idxs.len() == 0 { return }
         pushUndo()
@@ -744,7 +744,7 @@ struct AnimEditor {
     // 更换选中部件的图片（变换数据保持不变）
     func replaceSelImage(string img) {
         if selPart < 0 or curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if selPart >= a.parts.len() { return }
         pushUndo()
         Part p = a.parts[selPart]
@@ -772,7 +772,7 @@ struct AnimEditor {
     func snapshotBase() {
         baseX = 0.0; baseY = 0.0; baseA = 0.0; baseSx = 1.0; baseSy = 1.0
         if curAnim < 0 or curAnim >= anims.len() or selPart < 0 { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if selPart >= a.parts.len() or curFrame < 0 or curFrame >= a.nFrame { return }
         Part p = a.parts[selPart]
         baseX = p.px[curFrame]; baseY = p.py[curFrame]; baseA = p.pa[curFrame]
@@ -784,7 +784,7 @@ struct AnimEditor {
     func refreshEditDelta() {
         if lastEdit != "" { return }
         if curAnim < 0 or curAnim >= anims.len() or selPart < 0 { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if selPart >= a.parts.len() or curFrame < 0 or curFrame >= a.nFrame { return }
         Part p = a.parts[selPart]
         float dx = p.px[curFrame] - baseX
@@ -811,7 +811,7 @@ struct AnimEditor {
     //   f_h/f_v = 后续帧统一水平/垂直翻转
     func applyToAllFrames(string id) {
         if curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if curFrame < 0 or curFrame >= a.nFrame { return }
         // "a_" 前缀 = 应用到全部帧（含前面的帧）；否则只应用到当前帧之后
         bool allFrames = false
@@ -892,7 +892,7 @@ struct AnimEditor {
         if idxs.len() == 0 { return }
         refreshEditDelta()          // 兜底反推，保证第一项稳定出现
         if curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         int n = a.nFrame - curFrame - 1          // 后续帧数量
         // 帧维度之外的常规操作（始终可用）
         ctxMenu.addContextItem(ctxIdx, {label: "隐藏 / 显示 当前帧", id: "v_toggle"})
@@ -956,7 +956,7 @@ struct AnimEditor {
     // 追加一个部件（img = image 目录下的文件名），初始位置放在画面中心，每帧可见
     func addPartImage(string img) {
         if curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if a.nFrame <= 0 { a.nFrame = 1 }
         pushUndo()
         Part p = makePart(img, a.nFrame)
@@ -987,7 +987,7 @@ struct AnimEditor {
     // 复制选中部件（各帧变换照搬，位置略偏移便于区分）
     func dupSelLayer() {
         if selPart < 0 or curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if selPart >= a.parts.len() { return }
         pushUndo()
         Part src = a.parts[selPart]
@@ -1066,7 +1066,7 @@ struct AnimEditor {
 
     func delSelLayer() {
         if selPart < 0 or curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if selPart < 0 or selPart >= a.parts.len() { return }
         pushUndo()
         a.parts.remove(selPart)
@@ -1081,7 +1081,7 @@ struct AnimEditor {
 
     func moveLayer(int dir) {
         if selPart < 0 or curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         int j = selPart + dir
         if j < 0 or j >= a.parts.len() { return }
         Part t = a.parts[selPart]
@@ -1139,7 +1139,7 @@ struct AnimEditor {
     }
 
     // 洋葱皮：把指定帧的部件画成矩形轮廓（用轮廓而非半透明贴图，无需纹理 alpha 支持）
-    func drawGhostFrame(Renderer r, Anim a, int f, float ox0, float oy0, int which) {
+    func drawGhostFrame(Renderer r, EditorAnim a, int f, float ox0, float oy0, int which) {
         if which == 0 { r.setColor(#E06C75FF) } else { r.setColor(#2FA84FFF) }   // 前一帧红 / 后一帧绿
         for 0 : a.parts.len() - 1 to i {
             Part p = a.parts[i]
@@ -1203,7 +1203,7 @@ struct AnimEditor {
             return
         }
 
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if curFrame < 0 { curFrame = 0 }
         if curFrame >= a.nFrame { curFrame = a.nFrame - 1 }
 
@@ -1453,7 +1453,7 @@ struct AnimEditor {
     // 跳到指定帧（越界自动环绕），并作废「本次改动」记录
     func gotoFrame(int f) {
         if curAnim < 0 or curAnim >= anims.len() { return }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         if a.nFrame <= 0 { return }
         curFrame = f
         while curFrame < 0 { curFrame = curFrame + a.nFrame }
@@ -1471,7 +1471,7 @@ struct AnimEditor {
         syncList = true
         layerList.clear()
         if curAnim >= 0 and curAnim < anims.len() {
-            Anim a = anims[curAnim]
+            EditorAnim a = anims[curAnim]
             for 0 : a.parts.len() - 1 to i {
                 Part p = a.parts[i]
                 string tag = if (curFrame < p.vis.len() and p.vis[curFrame] == 0) then " [隐]" else ""
@@ -1490,7 +1490,7 @@ struct AnimEditor {
             lblRot.set_text("旋转: -"); lblScale.set_text("缩放: -")
             return
         }
-        Anim a = anims[curAnim]
+        EditorAnim a = anims[curAnim]
         string sel = if selPart < 0 then "无" else a.parts[selPart].img
         string ed = ""    // 本次改动（右键菜单据此生成第一项，也便于确认是否记录到）
         if lastEdit == "pos" { ed = $"  本次改动:位置({fmtF(_lastDx)},{fmtF(_lastDy)})" }

@@ -21,7 +21,7 @@ import rands
 import dirs
 import "pvz_types.leno" as types
 import "pvz_art.leno" as art
-use types.(Anim, Plant, Zombie, Pea, Sun, Mower, Particle, FloatText, Game)
+use types.(PvzAnim, Plant, Zombie, Pea, Sun, Mower, Particle, FloatText, Game)
 
 // ==================== 布局常量 ====================
 // 背景原图 1400x600：x∈[0,240] 是房子，x∈[245,995] 是草坪，y∈[80,580] 是草坪
@@ -143,7 +143,7 @@ func inRect(float x, float y, float rx, float ry, float rw, float rh): bool {
     return x >= rx and x <= rx + rw and y >= ry and y <= ry + rh
 }
 
-func animOf(Game g, int ptype, int act): Anim {
+func animOf(Game g, int ptype, int act): PvzAnim {
     if ptype == P_SUNFLOWER  { return g.anSunflower }
     if ptype == P_WALLNUT    { return g.anWallnut }
     if ptype == P_CHERRY     { return g.anCherry }

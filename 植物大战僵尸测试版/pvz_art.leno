@@ -15,7 +15,7 @@ import files
 import dirs
 use SDL3.Renderer
 use SDL3.Flip
-use types.Anim
+use types.PvzAnim
 
 func imgPath(string file): string {
     // 只读随包资源 ⇒ res_dir()（未打包 == script_dir()，打包后 = 内嵌资源释放目录）
@@ -31,8 +31,8 @@ export func loadTex(Renderer r, string file): Ptr[u8] {
 }
 
 // 载入一个动作的逐帧数据
-export func loadAnim(Renderer r, string file): Anim {
-    var an = new Anim()
+export func loadAnim(Renderer r, string file): PvzAnim {
+    var an = new PvzAnim()
     an.fps = 12
     an.nFrame = 0
     an.nPart = 0
@@ -120,7 +120,7 @@ export func loadAnim(Renderer r, string file): Anim {
 }
 
 // 包围盒底部中心（reanim 坐标）：角色站立的锚点
-export func calcOrigin(Anim an): [float, float] {
+export func calcOrigin(PvzAnim an): [float, float] {
     var minX = 99999.0
     var maxX = -99999.0
     var minY = 99999.0
@@ -144,13 +144,13 @@ export func calcOrigin(Anim an): [float, float] {
 }
 
 // 同一角色的多个动作要共用同一个原点，否则切换动作时会跳位
-export func setOrigin(Anim an, float ox, float oy) {
+export func setOrigin(PvzAnim an, float ox, float oy) {
     an.ox = ox
     an.oy = oy
 }
 
 // 绘制第 frame 帧；(px, py) = 骨架原点（包围盒底部中心）对齐到的屏幕坐标
-export func drawAnim(Renderer r, Anim an, float frame, float px, float py, float s) {
+export func drawAnim(Renderer r, PvzAnim an, float frame, float px, float py, float s) {
     if an.nPart == 0 or an.nFrame == 0 { return }
     var fi = _int(frame)
     if fi < 0 { fi = 0 }
@@ -172,7 +172,7 @@ export func drawAnim(Renderer r, Anim an, float frame, float px, float py, float
 }
 
 // 僵尸的护具（路障/铁桶）：挂在骨架坐标系上，跟随原点
-export func drawHat(Renderer r, Ptr[u8] tex, float w, float h, Anim zom,
+export func drawHat(Renderer r, Ptr[u8] tex, float w, float h, PvzAnim zom,
                     float px, float py, float s, float hx, float hy) {
     if tex == null { return }
     var dx = px + (hx - zom.ox) * s
@@ -186,7 +186,7 @@ export func drawHat(Renderer r, Ptr[u8] tex, float w, float h, Anim zom,
 }
 
 // 按 fps 推进动画帧（游戏 60fps）
-export func stepFrame(Anim an, float cur): float {
+export func stepFrame(PvzAnim an, float cur): float {
     var nf = cur + _float(an.fps) / 60.0
     while nf >= _float(an.nFrame) { nf = nf - _float(an.nFrame) }
     return nf
@@ -195,7 +195,7 @@ export func stepFrame(Anim an, float cur): float {
 // 阳光专用：三层光球同心叠放在锚点（忽略 reanim 里让它们绕核心大幅平移的坐标），
 // 只保留各帧的缩放/旋转做呼吸闪烁，从而呈现一个完整居中的太阳。
 // 绘制顺序为文件顺序（Sun3 大光晕底 → Sun2 → Sun1 核心顶）。
-export func drawSun(Renderer r, Anim an, float frame, float px, float py, float s) {
+export func drawSun(Renderer r, PvzAnim an, float frame, float px, float py, float s) {
     if an.nPart == 0 or an.nFrame == 0 { return }
     var fi = _int(frame)
     if fi < 0 { fi = 0 }
